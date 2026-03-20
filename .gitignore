@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Large PDFs (keep small test fixtures only)
+*.pdf
+
+# Test result files
+qa_results_*.csv
+qa_results_*.json
+*_verification_report*.csv
+
+# FreeCAD generated
+*.FCStd1
+*.FCBak
+
+# Logs
+*.log
+
+# Archives
+*.zip
+
+# Probe / debug output
+*.out
