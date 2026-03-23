@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""
+FreeCAD adapter for PDF Vector Importer QA.
+
+Purpose:
+- Provides a stable command-line interface for the external test runner.
+- Can launch FreeCAD in GUI or console mode.
+- Hands off a payload JSON to a Python harness script that performs the import
+  and writes a result JSON file.
+
+Typical use:
+python adapters/freecad_adapter.py --config qa_config.json --test-id FC-GEO-001 --input "C:/tests/1071 - Rev 0.pdf" --preset "Shop Drawing" --dry-run
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+
+def load_json(path: str | None) -> dict:
+    if not path:
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def normalize_path(value: str | None, base_dir: str | None = None) -> str | None:
+    if value is None:
+        return None
+    raw = os.path.expandvars(str(value))
+    p = Path(raw).expanduser()
+    if not p.is_absolute() and base_dir:
+        p = Path(base_dir) / p
+    return str(p.resolve())
+
+
+def build_payload(args: argparse.Namespace, cfg: dict, result_path: str, config_dir: str | None) -> dict:
+    freecad_cfg = cfg.get("freecad", {})
+    return {
+        "adapter": "freecad",
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "test_id": args.test_id,
+        "platform": "FC",
+        "input_pdf": normalize_path(args.input, config_dir),
+        "preset": args.preset,
+        "page_range": args.page_range,
+        "output_dir": normalize_path(args.output_dir, config_dir) if args.output_dir else None,
+        "result_json": result_path,
+        "mod_dir": normalize_path(freecad_cfg.get("mod_dir"), config_dir),
+        "python_harness": normalize_path(freecad_cfg.get("python_harness"), config_dir),
+        "expected": {
+            "layers_min_populated": args.layers_min_populated,
+            "runtime_cap_seconds": args.runtime_cap_seconds,
+        },
+        "notes": args.notes or "",
+    }
+
+
+def launch_freecad_console(freecadcmd_exe: str, harness: str, payload_path: str,
+                           timeout: int = 300) -> tuple[int, str, str]:
+    env = os.environ.copy()
+    env["BC_PDF_QA_PAYLOAD"] = payload_path
+
+    cmd = [freecadcmd_exe, harness]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return (
+            1,
+            "",
+            f"FreeCAD process timed out after {timeout} seconds. "
+            "Consider increasing the timeout or checking if the harness is stuck.",
+        )
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+    return proc.returncode, stdout, stderr
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="FreeCAD adapter for PDF Vector Importer QA.")
+    parser.add_argument("--config", help="Path to qa_config.json", required=False)
+    parser.add_argument("--test-id", required=True, help="Test ID, e.g. FC-GEO-001")
+    parser.add_argument("--input", required=True, help="Input PDF path")
+    parser.add_argument("--preset", default="Shop Drawing", help="Import preset name")
+    parser.add_argument("--page-range", default="1", help="Page range string")
+    parser.add_argument("--output-dir", help="Optional output directory")
+    parser.add_argument("--notes", help="Optional notes")
+    parser.add_argument("--layers-min-populated", type=int, default=0)
+    parser.add_argument("--runtime-cap-seconds", type=int, default=0)
+    parser.add_argument("--dry-run", action="store_true", help="Do not launch FreeCAD; emit a starter result only.")
+    args = parser.parse_args()
+
+    cfg = load_json(args.config)
+    config_dir = str(Path(args.config).expanduser().resolve().parent) if args.config else os.getcwd()
+    freecad_cfg = cfg.get("freecad", {})
+
+    with tempfile.TemporaryDirectory(prefix="bc_pdf_fc_qa_") as td:
+        payload_path = os.path.join(td, f"{args.test_id}_payload.json")
+        result_path = os.path.join(td, f"{args.test_id}_result.json")
+
+        payload = build_payload(args, cfg, result_path, config_dir)
+        with open(payload_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+        if args.dry_run:
+            result = {
+                "test_id": args.test_id,
+                "platform": "FC",
+                "status": "DRY_RUN",
+                "message": "FreeCAD adapter payload created successfully.",
+                "payload_json": payload_path,
+                "result_json_expected": result_path,
+            }
+            print(json.dumps(result, indent=2))
+            return 0
+
+        freecadcmd_exe = normalize_path(freecad_cfg.get("freecadcmd_exe"), config_dir)
+        harness = normalize_path(freecad_cfg.get("python_harness"), config_dir)
+        if not freecadcmd_exe or not os.path.isfile(freecadcmd_exe):
+            print(json.dumps({
+                "test_id": args.test_id,
+                "platform": "FC",
+                "status": "ERROR",
+                "message": f"FreeCADCmd executable not found: {freecadcmd_exe}",
+                "payload_json": payload_path,
+            }, indent=2))
+            return 2
+        if not harness or not os.path.isfile(harness):
+            print(json.dumps({
+                "test_id": args.test_id,
+                "platform": "FC",
+                "status": "ERROR",
+                "message": f"FreeCAD harness not found: {harness}",
+                "payload_json": payload_path,
+            }, indent=2))
+            return 2
+
+        timeout = args.runtime_cap_seconds if args.runtime_cap_seconds > 0 else 300
+        returncode, stdout, stderr = launch_freecad_console(freecadcmd_exe, harness, payload_path, timeout=timeout)
+
+        # Harness should write result JSON; if not, provide best-effort fallback.
+        if os.path.isfile(result_path):
+            try:
+                with open(result_path, "r", encoding="utf-8") as f:
+                    print(json.dumps(json.load(f), indent=2))
+                    return 0 if returncode == 0 else returncode
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+
+        print(json.dumps({
+            "test_id": args.test_id,
+            "platform": "FC",
+            "status": "ERROR" if returncode else "UNKNOWN",
+            "message": "Harness did not produce result JSON.",
+            "payload_json": payload_path,
+            "stdout": stdout[-4000:],
+            "stderr": stderr[-4000:],
+        }, indent=2))
+        return returncode if returncode else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

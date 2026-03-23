@@ -1,0 +1,42 @@
+name: pdfvectorimporter-ci
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - feature/**
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-and-qa-assets:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: PDFVectorImporter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install openpyxl ruff
+
+      - name: Compile Python sources
+        run: python -m compileall .
+
+      - name: Ruff syntax/lint gate
+        run: ruff check . --select F,E9 --exclude _inspect_fc_v350,_inspect_su_v350,src/lib
+
+      - name: Validate QA workbook schema
+        run: >
+          python run_pdf_vector_importer_tests.py
+          --workbook PDF_Vector_Importer_Test_Matrix.xlsx
+          --validate-only

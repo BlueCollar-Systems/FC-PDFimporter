@@ -1,136 +1,81 @@
 # PDF Vector Importer for FreeCAD
 
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Version: 3.5.0](https://img.shields.io/badge/Version-3.5.0-green.svg)
+**BUILT. NOT BOUGHT.**
+
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![Version: 3.5.0](https://img.shields.io/badge/Version-3.5.0-blue.svg)
 ![Platform: FreeCAD 0.20+](https://img.shields.io/badge/Platform-FreeCAD%200.20%2B-orange.svg)
 
-**Import vector geometry, text, and images from PDF files into FreeCAD as editable Part objects.**
+Import vector geometry, text, and images from PDF files into FreeCAD as editable Part objects.
 
 Arc reconstruction, dash mapping, color grouping, OCG layer support, and reference-based scaling -- all powered by pure-Python PDF parsing via PyMuPDF.
 
-> **BlueCollar Systems** -- BUILT. NOT BOUGHT.
-
----
+> BlueCollar Systems -- BUILT. NOT BOUGHT.
 
 ## Key Features
 
 | Category | Capability |
-|---|---|
-| **PDF Parsing** | PyMuPDF-powered vector extraction with full path, text, and image support |
-| **Import Presets** | Fast Preview, General Vector, Technical Drawing, Shop Drawing, Max Fidelity |
-| **Arc Reconstruction** | Kasa algebraic circle fit converts polyline segments back to true arcs |
-| **Layer Support** | OCG layers (PDF Optional Content Groups) map to FreeCAD groups |
-| **Color Grouping** | Geometry automatically organized by stroke/fill color |
-| **Dash Patterns** | Hidden, center, and phantom line types mapped from PDF dash arrays |
-| **Scale by Reference** | Pick two points on a known dimension, type the real-world value |
-| **Quick Scale** | Architectural presets from 1:1 through 1:200 |
-| **Text Import** | Labels or exploded geometry via pdftocairo |
-| **Raster Fallback** | Scanned pages imported as positioned images when no vectors are found |
-| **Image Extraction** | Embedded images extracted and placed in the model |
-| **Hatch Detection** | Three modes: Import, Group, or Skip detected hatch regions |
-| **Batch Import** | Multi-file import and drag-and-drop support |
-| **Auto View** | Orthographic top-down view set automatically after import |
-
----
+|----------|-----------|
+| PDF Parsing | PyMuPDF-powered vector extraction with full path, text, and image support |
+| Import Presets | Fast Preview, General Vector, Technical Drawing, Shop Drawing, Max Fidelity |
+| Arc Reconstruction | Kasa algebraic circle fit converts polyline segments back to true arcs |
+| Layer Support | OCG layers (PDF Optional Content Groups) map to FreeCAD groups |
+| Color Grouping | Geometry automatically organized by stroke/fill color |
+| Dash Patterns | PDF dash arrays mapped to FreeCAD line styles |
+| Text Import | PDF text extracted with font size, position, and rotation |
+| Image Import | Embedded raster images extracted and placed at correct coordinates |
+| Scale Detection | Reference-based scaling from known dimensions on the drawing |
+| Steel Detection | Recognizes common structural steel shape profiles |
 
 ## Installation
 
-1. Copy the `PDFVectorImporter` folder into your FreeCAD `Mod` directory:
+### From FreeCAD Addon Manager (Recommended)
+1. Open FreeCAD → **Tools** → **Addon Manager**
+2. Search for **PDF Vector Importer**
+3. Click **Install**
+4. Restart FreeCAD
 
-   | OS | Typical Path |
-   |---|---|
-   | **Windows** | `%APPDATA%\FreeCAD\Mod\` |
-   | **macOS** | `~/Library/Preferences/FreeCAD/Mod/` |
-   | **Linux** | `~/.FreeCAD/Mod/` |
-
-2. Restart FreeCAD.
-3. Switch to the **PDF Vector Importer** workbench from the workbench selector.
-4. PyMuPDF installs automatically on first use (requires pip / internet).
-
----
-
-## Requirements
-
-| Dependency | Required | Notes |
-|---|---|---|
-| **FreeCAD** | 0.20+ | Tested through 1.0 |
-| **PyMuPDF** | Yes | Auto-installed on first run |
-| **pdftocairo** | Optional | Required only for text-as-geometry import |
-
----
-
-## Architecture
-
-```
-_inspect_fc_v350/PDFVectorImporter/
-|-- Init.py                     # FreeCAD workbench registration
-|-- InitGui.py                  # GUI commands and menus
-|-- PDFImportHandler.py         # Top-level import orchestration
-|-- PDFTools.py                 # Toolbar actions (Scale, Quick Scale, Batch)
-|-- src/
-|   |-- PDFImporterCore.py      # Central import pipeline
-|   |-- PDFImporterCmd.py       # FreeCAD command wrappers
-|   |-- PDFScaleTool.py         # Scale by Reference implementation
-|   |-- PDFHatchDetector.py     # Hatch region detection engine
-|   |-- PDFPrimitives.py        # Primitive geometry builders
-|   |-- PDFSvgTextRenderer.py   # SVG/text rendering pipeline
-|   |-- PDFPrimitiveExtractor.py
-|   |-- PDFRecognition.py       # Pattern and symbol recognition
-|   |-- PDFRegions.py           # Spatial region analysis
-|   |-- PDFValidation.py        # Import validation checks
-|   |-- PDFDimensionParser.py   # Dimension text extraction
-|   |-- PDFDocumentProfiler.py  # Document type classification
-|   |-- PDFGenericClassifier.py # Generic element classification
-|   |-- PDFGenericRecognizer.py # Generic pattern recognition
-|   |-- PDFGeometryCleanup.py   # Duplicate/overlap removal
-```
-
----
-
-## QA and Testing
-
-The project includes a dedicated test runner system for automated validation.
-
-**Test Runner:** `run_pdf_vector_importer_tests.py`
-
-The test harness supports multiple target platforms through an adapter pattern:
-
-| Adapter | Target | Description |
-|---|---|---|
-| **FreeCAD** | FreeCAD 0.20+ | Full integration tests against live FreeCAD |
-| **SketchUp** | SketchUp | Cross-platform validation via SketchUp adapter |
-
-**Test artifacts:**
-- `qa_config_*.json` -- test suite configuration files
-- `qa_results_*.json` / `*.csv` -- machine-readable test results
-- Test PDFs in the project root for validation against known inputs
-
-Run the full suite:
-
-```bash
-python run_pdf_vector_importer_tests.py --config qa_config_local_full.json
-```
-
-Run a smoke test:
-
-```bash
-python run_pdf_vector_importer_tests.py --config qa_config_local_smoke.json
-```
-
----
+### Manual Installation
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/BlueCollar-Systems/FC-PDFimporter.git
+   ```
+2. Copy the `PDFVectorImporter` folder into your FreeCAD Mod directory:
+   - **Windows:** `%APPDATA%\FreeCAD\Mod\`
+   - **macOS:** `~/Library/Application Support/FreeCAD/Mod/`
+   - **Linux:** `~/.local/share/FreeCAD/Mod/`
+3. Install PyMuPDF:
+   ```bash
+   pip install PyMuPDF
+   ```
+4. Restart FreeCAD
 
 ## Usage
 
-1. Open FreeCAD and switch to the **PDF Vector Importer** workbench.
-2. Click **Import PDF** or drag a PDF file onto the 3D view.
-3. Select an import preset (or use General Vector for most files).
-4. Geometry appears as editable Part objects, grouped by color and layer.
-5. Use **Scale by Reference** to calibrate to real-world dimensions.
+1. Open FreeCAD
+2. Go to **File** → **Import** or use the **PDF Vector Importer** workbench
+3. Select a PDF file
+4. Choose an import preset (or customize settings)
+5. Click **Import**
 
----
+## Import Presets
+
+| Preset | Best For | Speed |
+|--------|----------|-------|
+| **Fast Preview** | Quick look at PDF contents | Fastest |
+| **General Vector** | Most PDF files | Fast |
+| **Technical Drawing** | Engineering drawings with dimensions | Medium |
+| **Shop Drawing** | Fabrication shop drawings with steel shapes | Medium |
+| **Max Fidelity** | Maximum accuracy, all features enabled | Slower |
+
+## Requirements
+
+- **FreeCAD** 0.20 or later
+- **Python** 3.8+
+- **PyMuPDF** (automatically installed via Addon Manager)
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE) for details.
 
 Copyright (c) 2024-2026 BlueCollar Systems

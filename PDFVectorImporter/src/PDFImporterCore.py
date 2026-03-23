@@ -1,0 +1,2061 @@
+# -*- coding: utf-8 -*-
+# PDFImporterCore.py — FreeCAD PDF Vector Import Engine
+# BlueCollar Systems — BUILT. NOT BOUGHT.
+# License: MIT (PyMuPDF itself is AGPL-3 / commercial)
+"""
+Converts PDF vector paths, text, and embedded images into native FreeCAD
+Part geometry (wires, faces, arcs) with full color/layer grouping.
+
+Converts PDF drawings into editable FreeCAD geometry with text and image support.
+"""
+from __future__ import annotations
+
+import math
+import os
+import re
+import sys
+import time
+import traceback
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+# Ensure bundled PyMuPDF is importable
+_lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
+if _lib_dir not in sys.path:
+    sys.path.insert(0, _lib_dir)
+
+import fitz  # PyMuPDF
+
+# FreeCAD modules — lazy import for IDE friendliness outside FreeCAD
+try:
+    import FreeCAD
+    import Draft
+    import Part
+    from FreeCAD import Placement, Rotation, Vector
+except ImportError:
+    FreeCAD = Draft = Part = None
+    Vector = Placement = Rotation = None
+
+try:
+    import ImageGui  # noqa: F401
+    IMAGE_WB = True
+except ImportError:
+    IMAGE_WB = False
+
+# ──────────────────────────────────────────────────────────────────────
+# Constants
+# ──────────────────────────────────────────────────────────────────────
+MM_PER_PT = 25.4 / 72.0       # 1 PDF point = 0.352778 mm
+ZERO_TOL  = 1e-9              # near-zero length tolerance
+CLOSE_TOL = 1e-6              # endpoint-coincidence tolerance
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Logging
+# ──────────────────────────────────────────────────────────────────────
+def _msg(s: str):
+    if FreeCAD:
+        FreeCAD.Console.PrintMessage(s + "\n")
+
+def _warn(s: str):
+    if FreeCAD:
+        FreeCAD.Console.PrintWarning(s + "\n")
+
+def _err(s: str):
+    if FreeCAD:
+        FreeCAD.Console.PrintError(s + "\n")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Vector helpers  (FreeCAD.Vector.multiply is IN-PLACE — never use it
+# for math expressions.  Use the * operator which returns a NEW vector.)
+# ──────────────────────────────────────────────────────────────────────
+def _v(x: float, y: float, z: float = 0.0) -> "Vector":
+    return Vector(x, y, z)
+
+
+def _len2d(a: "Vector", b: "Vector") -> float:
+    return math.hypot(a.x - b.x, a.y - b.y)
+
+
+def _pts_closed(pts: List["Vector"], tol: float = CLOSE_TOL) -> bool:
+    return len(pts) > 2 and _len2d(pts[0], pts[-1]) <= tol
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PyMuPDF 1.24+ / 1.26 compatibility  (objects may be Point, tuple, etc.)
+# ──────────────────────────────────────────────────────────────────────
+def _is_point(obj) -> bool:
+    return hasattr(obj, "x") and hasattr(obj, "y")
+
+
+def _is_rect(obj) -> bool:
+    return all(hasattr(obj, a) for a in ("x0", "y0", "x1", "y1"))
+
+
+def _xy(obj) -> Tuple[float, float]:
+    """Extract (x, y) from a fitz.Point, tuple, or list."""
+    if _is_point(obj):
+        return float(obj.x), float(obj.y)
+    if isinstance(obj, (tuple, list)) and len(obj) >= 2:
+        return float(obj[0]), float(obj[1])
+    return float(obj), 0.0
+
+
+def _rect_coords(obj) -> Tuple[float, float, float, float]:
+    """Return (x0, y0, w, h) from a fitz.Rect or 4-element sequence."""
+    if _is_rect(obj):
+        x0, y0 = float(obj.x0), float(obj.y0)
+        return x0, y0, float(obj.x1) - x0, float(obj.y1) - y0
+    if isinstance(obj, (tuple, list)) and len(obj) >= 4:
+        return float(obj[0]), float(obj[1]), float(obj[2]), float(obj[3])
+    return 0.0, 0.0, 0.0, 0.0
+
+
+def _as_float(v) -> Optional[float]:
+    """Coerce a value to float (handles fitz.Point, scalar, tuple)."""
+    try:
+        if hasattr(v, "x") and not isinstance(v, (int, float)):
+            return float(v.x)
+        return float(v)
+    except (TypeError, ValueError, AttributeError):
+        if isinstance(v, (tuple, list)) and v:
+            try:
+                return float(v[0])
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _as_float_list(seq) -> List[float]:
+    out = []
+    for x in (seq or []):
+        fx = _as_float(x)
+        if fx is not None:
+            out.append(fx)
+    return out
+
+
+def _parse_dashes(val) -> List[float]:
+    """Parse a dash pattern from PyMuPDF which may be:
+    - A string like '[ 6 6 ] 0'  (bracket-delimited, with trailing phase)
+    - A list of floats [6.0, 6.0]
+    - None or empty
+    Returns a list of float dash lengths (no phase value)."""
+    if val is None:
+        return []
+    if isinstance(val, str):
+        # Extract numbers from between brackets: "[ 6 6 ] 0" → [6.0, 6.0]
+        import re
+        bracket_match = re.search(r'\[([^\]]*)\]', val)
+        if bracket_match:
+            inner = bracket_match.group(1).strip()
+            if not inner:
+                return []  # empty brackets = solid
+            nums = []
+            for part in inner.split():
+                try:
+                    nums.append(float(part))
+                except ValueError:
+                    pass
+            return nums
+        # No brackets — try splitting as space-separated numbers
+        nums = []
+        for part in val.split():
+            try:
+                nums.append(float(part))
+            except ValueError:
+                pass
+        return nums
+    # Handle nested tuple/list: ([dash_array], phase) from newer PyMuPDF
+    if isinstance(val, (tuple, list)) and len(val) >= 1:
+        if isinstance(val[0], (tuple, list)):
+            return _as_float_list(val[0])
+    # Already a flat list/tuple
+    return _as_float_list(val)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Color normalization
+# ──────────────────────────────────────────────────────────────────────
+def _clamp01(v) -> float:
+    try:
+        return max(0.0, min(1.0, float(v)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _norm_color(col) -> Tuple[float, float, float]:
+    """Normalize any PyMuPDF color representation to (r, g, b) in [0..1]."""
+    if col is None:
+        return (0.0, 0.0, 0.0)
+    try:
+        if isinstance(col, (int, float)):
+            g = _clamp01(col)
+            return (g, g, g)
+        vals = []
+        for c in col:
+            f = _as_float(c)
+            vals.append(_clamp01(f) if f is not None else 0.0)
+        if len(vals) == 0:
+            return (0.0, 0.0, 0.0)
+        if len(vals) == 1:
+            return (vals[0], vals[0], vals[0])
+        while len(vals) < 3:
+            vals.append(vals[-1])
+        return (vals[0], vals[1], vals[2])
+    except (TypeError, ValueError, AttributeError):
+        return (0.0, 0.0, 0.0)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Options
+# ──────────────────────────────────────────────────────────────────────
+@dataclass
+class ImportOptions:
+    pages: Optional[List[int]] = None       # 1-based page numbers; None → [1]
+    scale_to_mm: bool = True                # convert PDF points → mm
+    user_scale: float = 1.0                 # additional multiplier
+    flip_y: bool = True                     # PDF Y-down → CAD Y-up
+    join_tol: float = 0.1                   # mm — snap endpoints
+    min_seg_len: float = 0.0                # skip degenerate micro-edges
+    curve_step_mm: float = 0.5              # Bezier linearization chord
+    make_faces: bool = True                 # close filled paths → Part::Face
+    import_text: bool = True
+    text_mode: str = "labels"             # "labels" | "geometry" | "none"
+    group_by_color: bool = True
+    assign_linewidth: bool = True
+    map_dashes: bool = True
+    verbose: bool = True
+    create_top_group: bool = True
+    hatch_to_faces: bool = True
+    hatch_mode: str = "import"              # "import" | "skip" | "group"
+    ignore_images: bool = False
+    raster_fallback: bool = True             # render page as image if no vectors
+    raster_dpi: int = 200                    # DPI for raster fallback rendering
+    # Import mode: "auto" | "vectors" | "raster" | "hybrid"
+    #   auto    — detect image-heavy PDFs and auto-select hybrid
+    #   vectors — vector geometry only (original behavior)
+    #   raster  — render full page as image, skip vectors
+    #   hybrid  — raster background + vector geometry on top
+    import_mode: str = "auto"
+    max_bezier_segments: int = 128
+    # Arc reconstruction
+    detect_arcs: bool = True
+    arc_fit_tol_mm: float = 0.08
+    min_arc_angle_deg: float = 5.0
+    arc_sampling_pts: int = 7
+    # Layering
+    layer_mode: str = "auto"                # "auto" | "ocg" | "color" | "none"
+    # Object-count management (prevents Windows GDI handle exhaustion)
+    compound_batch_size: int = 200          # batch N shapes into one Part::Compound
+    #   0 = no batching (original behavior, risky on large PDFs)
+    # Heavy-page safe mode — auto-engaged when drawing groups exceed threshold
+    heavy_page_threshold: int = 3000        # above this: larger batches, throttled
+    #   progress updates, deferred arc fitting on polyline runs
+    #   0 = never auto-engage heavy mode
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Coordinate transform
+# ──────────────────────────────────────────────────────────────────────
+def _to_fc(xy: Tuple[float, float], page_h: float,
+           opts: ImportOptions, scale: float) -> "Vector":
+    """Transform a PDF coordinate pair into a FreeCAD Vector."""
+    x, y = xy
+    if opts.flip_y:
+        y = page_h - y
+    return _v(x * scale, y * scale, 0)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cubic Bezier evaluation  (SAFE — never mutates vectors)
+# ──────────────────────────────────────────────────────────────────────
+def _bezier_point(p0: "Vector", p1: "Vector", p2: "Vector",
+                  p3: "Vector", t: float) -> "Vector":
+    """De Casteljau evaluation of cubic Bézier at parameter t ∈ [0,1].
+
+    FreeCAD.Vector.multiply() is **in-place** and returns None, so we
+    must use the ``*`` and ``+`` operators which return new Vectors.
+    """
+    u = 1.0 - t
+    # B(t) = (1-t)^3·P0 + 3(1-t)^2·t·P1 + 3(1-t)·t^2·P2 + t^3·P3
+    return (p0 * (u * u * u)
+            + p1 * (3.0 * u * u * t)
+            + p2 * (3.0 * u * t * t)
+            + p3 * (t * t * t))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Circle / arc fitting  (Kåsa algebraic fit)
+# ──────────────────────────────────────────────────────────────────────
+def _circle_fit(points: List["Vector"]) -> Tuple["Vector", float, float]:
+    """Return (center, radius, rms_error) via Kåsa algebraic circle fit."""
+    n = len(points)
+    if n < 3:
+        raise ValueError("Need ≥ 3 points")
+    sx  = sum(p.x for p in points)
+    sy  = sum(p.y for p in points)
+    sx2 = sum(p.x * p.x for p in points)
+    sy2 = sum(p.y * p.y for p in points)
+    sxy = sum(p.x * p.y for p in points)
+    sz  = sum(p.x * p.x + p.y * p.y for p in points)
+    sxz = sum(p.x * (p.x * p.x + p.y * p.y) for p in points)
+    syz = sum(p.y * (p.x * p.x + p.y * p.y) for p in points)
+
+    A = [[sx, sy, n], [sx2, sxy, sx], [sxy, sy2, sy]]
+    B = [sz, sxz, syz]
+
+    def det3(m):
+        return (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+              - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+              + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+
+    D = det3(A)
+    if abs(D) < 1e-12:
+        raise ValueError("Singular matrix in circle fit")
+
+    A1 = [[B[0], A[0][1], A[0][2]], [B[1], A[1][1], A[1][2]], [B[2], A[2][1], A[2][2]]]
+    A2 = [[A[0][0], B[0], A[0][2]], [A[1][0], B[1], A[1][2]], [A[2][0], B[2], A[2][2]]]
+    A3 = [[A[0][0], A[0][1], B[0]], [A[1][0], A[1][1], B[1]], [A[2][0], A[2][1], B[2]]]
+
+    a = det3(A1) / D
+    b = det3(A2) / D
+    c = det3(A3) / D
+    cx, cy = 0.5 * a, 0.5 * b
+    r = math.sqrt(max(0, c + cx * cx + cy * cy))
+    center = _v(cx, cy, 0)
+    rms = math.sqrt(sum((_len2d(p, center) - r) ** 2 for p in points) / n)
+    return center, r, rms
+
+
+def _arc_from_cubic(p0, p1, p2, p3, opts: ImportOptions):
+    """If cubic ≈ circular arc, return (start, mid, end) for Part.Arc."""
+    if not opts.detect_arcs:
+        return None
+    m = max(3, opts.arc_sampling_pts)
+    if m % 2 == 0:
+        m += 1
+    tvals = [i / (m - 1) for i in range(m)]
+    pts = [_bezier_point(p0, p1, p2, p3, t) for t in tvals]
+    try:
+        center, r, rms = _circle_fit(pts)
+    except ValueError:
+        return None
+    if rms > opts.arc_fit_tol_mm:
+        return None
+    v0 = p0 - center
+    v3 = p3 - center
+    if v0.Length < ZERO_TOL or v3.Length < ZERO_TOL:
+        return None
+    a0 = math.atan2(v0.y, v0.x)
+    a3 = math.atan2(v3.y, v3.x)
+    d = a3 - a0
+    while d <= -math.pi:
+        d += 2 * math.pi
+    while d > math.pi:
+        d -= 2 * math.pi
+    if abs(d) * 180.0 / math.pi < opts.min_arc_angle_deg:
+        return None
+    pmid = pts[len(pts) // 2]
+    return (p0, pmid, p3)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Edge / wire / face builders
+# ──────────────────────────────────────────────────────────────────────
+def _edge_line(p1: "Vector", p2: "Vector"):
+    """Part.Edge from two points; returns None if degenerate."""
+    try:
+        if _len2d(p1, p2) <= ZERO_TOL:
+            return None
+        return Part.LineSegment(p1, p2).toShape()
+    except (RuntimeError, ValueError, TypeError):
+        return None
+
+
+def _edge_arc(p1: "Vector", pmid: "Vector", p2: "Vector"):
+    try:
+        return Part.Arc(p1, pmid, p2).toShape()
+    except (RuntimeError, ValueError, TypeError):
+        return None
+
+
+def _make_shape_obj(edges: List, closed: bool, make_face: bool, fc_doc=None):
+    """Build Part::Feature from edges, optionally closing + making a Face."""
+    if not edges:
+        return None
+    doc = fc_doc or FreeCAD.ActiveDocument
+    try:
+        wire = Part.Wire(edges)
+        if closed and not wire.isClosed():
+            # Use wire vertexes (topologically safe) instead of edge vertexes
+            if wire.Vertexes:
+                p0 = wire.Vertexes[0].Point
+                pN = wire.Vertexes[-1].Point
+                if _len2d(_v(p0.x, p0.y), _v(pN.x, pN.y)) > ZERO_TOL:
+                    closer = Part.LineSegment(pN, p0).toShape()
+                    wire = Part.Wire(edges + [closer])
+        if make_face and wire.isClosed():
+            try:
+                face = Part.Face(wire)
+                obj = doc.addObject("Part::Feature", "Face")
+                obj.Shape = face
+                return obj
+            except (RuntimeError, ValueError, TypeError):
+                pass
+        obj = doc.addObject("Part::Feature", "Wire")
+        obj.Shape = wire
+        return obj
+    except (RuntimeError, ValueError, TypeError):
+        return None
+
+
+def _apply_style(obj, stroke_rgb, width, dashes, opts: ImportOptions):
+    """Set line color, width, and dash style on a Part::Feature ViewObject."""
+    try:
+        vo = obj.ViewObject
+        if stroke_rgb is not None:
+            vo.LineColor = stroke_rgb
+        if opts.assign_linewidth and width is not None:
+            try:
+                # PDF line widths in points are tiny; scale and enforce a visible minimum
+                lw = float(width) * (0.7 if opts.scale_to_mm else 1.0)
+                # Minimum 2.0 so lines are always visible regardless of background
+                vo.LineWidth = max(2.0, lw)
+            except (TypeError, ValueError, AttributeError):
+                vo.LineWidth = 2.0
+        else:
+            # Even with no width info, make lines visible
+            try:
+                vo.LineWidth = 2.0
+            except (AttributeError, RuntimeError):
+                pass
+        if opts.map_dashes and dashes and len(dashes) >= 2:
+            if all(d > 0 for d in dashes):
+                if len(dashes) == 2:
+                    # [dash, gap] → simple dashed
+                    vo.DrawStyle = "Dashed"
+                elif len(dashes) >= 4:
+                    # [dash, gap, dot, gap] → center line / dashdot
+                    vo.DrawStyle = "Dashdot"
+                elif len(dashes) == 3:
+                    vo.DrawStyle = "Dashdot"
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+def _make_group(parent, label: str, fc_doc=None):
+    doc = fc_doc or FreeCAD.ActiveDocument
+    grp = doc.addObject("App::DocumentObjectGroup", label)
+    parent.addObject(grp)
+    return grp
+
+
+def _ensure_doc():
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        doc = FreeCAD.newDocument("PDF_Import")
+    return doc
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Path item parsing helpers  (handles all PyMuPDF item formats)
+# ──────────────────────────────────────────────────────────────────────
+def _parse_point(data) -> Tuple[float, float]:
+    """Parse a moveto / lineto data payload → (x, y)."""
+    if len(data) == 1:
+        return _xy(data[0])
+    if len(data) >= 2:
+        if _is_point(data[0]):
+            return _xy(data[0])
+        return float(data[0]), float(data[1])
+    return 0.0, 0.0
+
+
+def _parse_cubic(data) -> Tuple[Tuple[float, float], ...]:
+    """Parse curveto data → ((x1,y1), (x2,y2), (x3,y3))."""
+    if len(data) == 3 and all(_is_point(d) for d in data):
+        return _xy(data[0]), _xy(data[1]), _xy(data[2])
+    if len(data) >= 6:
+        return ((float(data[0]), float(data[1])),
+                (float(data[2]), float(data[3])),
+                (float(data[4]), float(data[5])))
+    # 3 points as tuples
+    if len(data) == 3:
+        return _xy(data[0]), _xy(data[1]), _xy(data[2])
+    raise ValueError(f"Cannot parse cubic data: {data}")
+
+
+def _parse_quad(data) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Parse quadratic Bezier ('v') → ((cx,cy), (x,y))."""
+    if len(data) == 2 and all(_is_point(d) for d in data):
+        return _xy(data[0]), _xy(data[1])
+    if len(data) >= 4:
+        return ((float(data[0]), float(data[1])),
+                (float(data[2]), float(data[3])))
+    if len(data) == 2:
+        return _xy(data[0]), _xy(data[1])
+    raise ValueError(f"Cannot parse quad data: {data}")
+
+
+def _parse_rect(data) -> Tuple[float, float, float, float]:
+    """Parse 're' data → (x, y, w, h). Handles Rect, (Rect, int), or 4 floats."""
+    # PyMuPDF may give (Rect,), (Rect, winding_number), or (x, y, w, h)
+    if len(data) >= 1 and _is_rect(data[0]):
+        return _rect_coords(data[0])
+    if len(data) == 1:
+        return _rect_coords(data[0])
+    if len(data) >= 4:
+        try:
+            return float(data[0]), float(data[1]), float(data[2]), float(data[3])
+        except (TypeError, ValueError, IndexError):
+            pass
+    if len(data) >= 2 and _is_point(data[0]) and _is_point(data[1]):
+        x0, y0 = _xy(data[0])
+        x1, y1 = _xy(data[1])
+        return x0, y0, x1 - x0, y1 - y0
+    return 0.0, 0.0, 0.0, 0.0
+
+
+def _polyline_edges_to_arcs(edges: List, opts: ImportOptions) -> List:
+    """Detect runs of line segments that form circular arcs and replace
+    them with true Part::Arc edges.
+
+    Many PDF generators (Tekla, SDS2, etc.) pre-linearize circles and arcs
+    into 16-32 segment polylines. This function reconstructs true arcs.
+    """
+    if len(edges) < 3:
+        return edges
+
+    # Extract vertices from consecutive line edges
+    verts = []
+    for e in edges:
+        try:
+            v = e.Vertexes
+            if not verts:
+                verts.append(v[0].Point)
+            verts.append(v[-1].Point)
+        except (AttributeError, TypeError, IndexError):
+            verts.append(None)  # non-line edge (already an arc, etc.)
+
+    if len(verts) < 4:
+        return edges
+
+    # Scan for runs of vertices that fit a circle
+    result_edges = []
+    i = 0
+    n = len(edges)
+
+    while i < n:
+        # Try to find the longest arc starting at position i
+        best_arc_end = -1
+        best_arc = None
+
+        # Need at least 3 edges (4 vertices) for a reliable arc fit
+        for j in range(i + 3, min(i + 65, n + 1)):  # max 64 segments
+            run_verts = verts[i:j + 1]
+            # Skip if any vertex is None (non-line edge in the run)
+            if any(v is None for v in run_verts):
+                break
+            if len(run_verts) < 4:
+                continue
+
+            try:
+                pts_2d = [_v(v.x, v.y, 0) for v in run_verts]
+                center, r, rms = _circle_fit(pts_2d)
+
+                # Accept if fit is good relative to the radius
+                tol = max(opts.arc_fit_tol_mm, r * 0.005)  # 0.5% of radius
+                if rms < tol and r > 0.1:
+                    # Check arc sweep is meaningful
+                    v0 = pts_2d[0] - center
+                    vN = pts_2d[-1] - center
+                    if v0.Length > ZERO_TOL and vN.Length > ZERO_TOL:
+                        best_arc_end = j
+                        mid_idx = len(pts_2d) // 2
+                        best_arc = (run_verts[0], run_verts[mid_idx], run_verts[-1])
+            except ValueError:
+                pass
+
+        if best_arc is not None and best_arc_end > i + 2:
+            # Replace edges[i:best_arc_end] with a single arc
+            p_start, p_mid, p_end = best_arc
+            arc_edge = _edge_arc(p_start, p_mid, p_end)
+            if arc_edge is not None:
+                result_edges.append(arc_edge)
+                i = best_arc_end
+                continue
+
+        # No arc found starting here — keep the original edge
+        result_edges.append(edges[i])
+        i += 1
+
+    return result_edges
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Text fraction reconstruction
+# ──────────────────────────────────────────────────────────────────────
+# Common denominators in structural/architectural drawings
+_VALID_DENOMS = {2, 4, 8, 16, 32, 64, 3, 6, 12}
+
+
+def _try_split_fraction(text: str) -> Optional[Tuple[str, str]]:
+    """Try to split a combined numerator+denominator string like '18' → ('1','8').
+    Returns (numerator, denominator) or None if no valid fraction found."""
+    if not text or len(text) < 2:
+        return None
+    # Try each split point: "916" → ("9","16"), ("91","6")
+    best = None
+    for i in range(1, len(text)):
+        num_s, den_s = text[:i], text[i:]
+        try:
+            num, den = int(num_s), int(den_s)
+        except ValueError:
+            continue
+        if den in _VALID_DENOMS and 0 < num < den:
+            # Prefer the split that gives a standard fraction
+            if best is None:
+                best = (num_s, den_s)
+            # Prefer smaller denominators (more common)
+            elif int(best[1]) > den:
+                best = (num_s, den_s)
+    return best
+
+
+def _is_fraction_slash(span: dict) -> bool:
+    """Check if a span is a fraction bar '/' drawn between stacked numbers."""
+    text = span.get("text", "").strip()
+    return text == "/"
+
+
+def _is_superscript(span: dict) -> bool:
+    """Check if span has the superscript flag (bit 0 of flags)."""
+    return bool(span.get("flags", 0) & 1)
+
+
+def _is_smaller_font(span: dict, ref_size: float) -> bool:
+    """Check if span is noticeably smaller than the reference size."""
+    size = float(span.get("size", 0))
+    return size > 0 and size < ref_size * 0.95
+
+
+def _reconstruct_line_text(spans: list) -> str:
+    """Reconstruct a line of text, converting stacked fractions back to inline.
+
+    PyMuPDF extracts PDF fractions (stacked numerator/denominator) as separate
+    spans. CRITICALLY, the "/" fraction bar often appears on a completely
+    separate PyMuPDF line — so we CANNOT rely on seeing "/" within this line.
+
+    Detection strategy: if we see small-font digit strings that form a valid
+    fraction (numerator < denominator, denominator is a standard value), we
+    reconstruct it as "num/denom" regardless of whether "/" is present.
+    """
+    if not spans:
+        return ""
+
+    # Single span — only try fraction split on longer digit strings (3+ chars)
+    # Short strings like "12" are ambiguous (twelve vs 1/2) and at main text
+    # size they're always the number. Real fractions like "1516" are 3+ chars.
+    if len(spans) == 1:
+        text = spans[0].get("text", "")
+        if text.isdigit() and len(text) >= 3:
+            frac = _try_split_fraction(text)
+            if frac:
+                return frac[0] + "/" + frac[1]
+        return text
+
+    # Find the dominant (largest) font size in this line
+    sizes = [float(s.get("size", 0)) for s in spans]
+    main_size = max(sizes) if sizes else 10.0
+
+    result = []
+    i = 0
+
+    def _append_frac(frac_str: str):
+        """Append a fraction string with conservative spacing.
+        Keep fractions tight after hyphens / parens / apostrophes so strings like
+        PIPE1-1/2STD do not become PIPE1-1/2 STD. Only insert a space when the
+        previous token really looks like a separate word/number."""
+        if result and result[-1]:
+            last_char = result[-1][-1]
+            if last_char not in (" ", "-", "(", "[", "/", "'"):
+                if last_char.isalpha() or last_char.isdigit():
+                    result.append(" ")
+        result.append(frac_str)
+
+    while i < len(spans):
+        span = spans[i]
+        text = span.get("text", "")
+        size = float(span.get("size", 0))
+
+        # Skip standalone "/" — fraction bar (content already reconstructed)
+        if _is_fraction_slash(span):
+            if result and "/" in result[-1]:
+                i += 1
+                continue
+            result.append(text)
+            i += 1
+            continue
+
+        # Case A: Superscript numerator + denominator (with or without "/")
+        # Pattern 1: ('7', flags=5) + ('16', small) → "7/16"
+        # Pattern 2: ('7', flags=5) + ('/', slash) + ('16', small) → "7/16"
+        if (_is_superscript(span) and _is_smaller_font(span, main_size)
+                and text.isdigit() and i + 1 < len(spans)):
+            next_span = spans[i + 1]
+            next_text = next_span.get("text", "")
+
+            # Pattern 1: numerator immediately followed by denominator
+            if next_text.isdigit() and _is_smaller_font(next_span, main_size):
+                try:
+                    num_v, den_v = int(text), int(next_text)
+                    if den_v in _VALID_DENOMS and 0 < num_v < den_v:
+                        _append_frac(text + "/" + next_text)
+                        i += 2
+                        if i < len(spans) and _is_fraction_slash(spans[i]):
+                            i += 1
+                        continue
+                except ValueError:
+                    pass
+
+            # Pattern 2: numerator + "/" + denominator (slash merged from adjacent line)
+            if (_is_fraction_slash(next_span) and i + 2 < len(spans)):
+                den_span = spans[i + 2]
+                den_text = den_span.get("text", "")
+                if den_text.isdigit() and _is_smaller_font(den_span, main_size):
+                    try:
+                        num_v, den_v = int(text), int(den_text)
+                        if den_v in _VALID_DENOMS and 0 < num_v < den_v:
+                            _append_frac(text + "/" + den_text)
+                            i += 3  # skip num, slash, denom
+                            continue
+                    except ValueError:
+                        pass
+
+        # Case B: Small-font combined digits (with or without "/")
+        # e.g. ('1516', size=10) → "15/16"
+        # e.g. ('18', size=10) → "1/8"
+        # e.g. ('12', size=10) → "1/2"
+        if _is_smaller_font(span, main_size) and text.isdigit() and len(text) >= 2:
+            frac = _try_split_fraction(text)
+            if frac:
+                _append_frac(frac[0] + "/" + frac[1])
+                i += 1
+                # Skip trailing "/" if present
+                if i < len(spans) and _is_fraction_slash(spans[i]):
+                    i += 1
+                continue
+
+        # Case C: Two same-sized digit spans → standalone fraction
+        # e.g. ('5', size=10) + ('8', size=10) → "5/8"
+        # Also handles: ('5', size=10) + ('/', slash) + ('8', size=10) → "5/8"
+        if (text.isdigit() and _is_smaller_font(span, main_size) and i + 1 < len(spans)):
+            next_span = spans[i + 1]
+            next_text = next_span.get("text", "")
+            next_size = float(next_span.get("size", 0))
+
+            # Pattern 1: num + denom (adjacent)
+            if (next_text.isdigit() and abs(size - next_size) < 1.0):
+                try:
+                    num_v, den_v = int(text), int(next_text)
+                    if den_v in _VALID_DENOMS and 0 < num_v < den_v:
+                        _append_frac(text + "/" + next_text)
+                        i += 2
+                        if i < len(spans) and _is_fraction_slash(spans[i]):
+                            i += 1
+                        continue
+                except ValueError:
+                    pass
+
+            # Pattern 2: num + "/" + denom
+            if (_is_fraction_slash(next_span) and i + 2 < len(spans)):
+                den_span = spans[i + 2]
+                den_text = den_span.get("text", "")
+                den_size = float(den_span.get("size", 0))
+                if (den_text.isdigit() and abs(size - den_size) < 1.0):
+                    try:
+                        num_v, den_v = int(text), int(den_text)
+                        if den_v in _VALID_DENOMS and 0 < num_v < den_v:
+                            _append_frac(text + "/" + den_text)
+                            i += 3
+                            continue
+                    except ValueError:
+                        pass
+
+        # Default: just append the text
+        result.append(text)
+        i += 1
+
+    return "".join(result)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Text layout helpers
+# ──────────────────────────────────────────────────────────────────────
+def _estimate_text_width_units(text: str) -> float:
+    """Rough width estimate in font-size units for Draft text."""
+    units = 0.0
+    for ch in text or "":
+        if ch in "ilI|":
+            units += 0.35
+        elif ch == "1":
+            units += 0.45
+        elif ch in " /'-\".":
+            units += 0.30
+        elif ch in "MW@#%":
+            units += 0.95
+        else:
+            units += 0.65
+    return units
+
+
+def _estimate_text_width_mm(text: str, font_size_fc: float) -> float:
+    return _estimate_text_width_units(text) * font_size_fc
+
+
+def _same_text_line(y1: float, y2: float, size1: float, size2: float) -> bool:
+    tol = 0.25 * max(size1, size2, 1.0)
+    return abs(y1 - y2) <= tol
+
+
+def _is_near_horizontal(dx: float, dy: float) -> bool:
+    return abs(dx) > 0.95 and abs(dy) < 0.10
+
+
+def _preprocess_text_blocks(tdict: dict) -> dict:
+    """Split PyMuPDF lines conservatively when span coordinates prove the text
+    is not a single clean run. This helps when PyMuPDF merges neighboring runs
+    that are on almost the same line but should remain separate."""
+    for block in tdict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        fixed_lines = []
+        for line in block.get("lines", []):
+            spans = line.get("spans", []) or []
+            if not spans:
+                continue
+            line_dir = line.get("dir", (1.0, 0.0))
+            try:
+                dx, dy = float(line_dir[0]), float(line_dir[1])
+            except (TypeError, ValueError, IndexError):
+                dx, dy = 1.0, 0.0
+            is_horizontal = _is_near_horizontal(dx, dy)
+            current_spans = [spans[0]]
+            current_bbox = list(spans[0].get("bbox", (0, 0, 0, 0)))
+            prev_bbox = current_bbox[:]
+            for span in spans[1:]:
+                bbox = list(span.get("bbox", (0, 0, 0, 0)))
+                should_split = False
+                if is_horizontal:
+                    gap_x = float(bbox[0]) - float(prev_bbox[2])
+                    gap_y = abs(float(bbox[1]) - float(prev_bbox[1]))
+                    # Conservative: split on strong wrap-back / large gaps / clear stacked shift.
+                    if gap_x < -1.0 or gap_x > 28.0 or gap_y > 4.0:
+                        should_split = True
+                else:
+                    gap_x = abs(float(bbox[0]) - float(prev_bbox[0]))
+                    gap_y = float(bbox[1]) - float(prev_bbox[3])
+                    if gap_y > 28.0 or gap_x > 4.0:
+                        should_split = True
+                if should_split:
+                    fixed_lines.append({"spans": current_spans, "bbox": tuple(current_bbox), "dir": line_dir})
+                    current_spans = [span]
+                    current_bbox = bbox[:]
+                else:
+                    current_spans.append(span)
+                    current_bbox[0] = min(current_bbox[0], bbox[0])
+                    current_bbox[1] = min(current_bbox[1], bbox[1])
+                    current_bbox[2] = max(current_bbox[2], bbox[2])
+                    current_bbox[3] = max(current_bbox[3], bbox[3])
+                prev_bbox = bbox[:]
+            if current_spans:
+                fixed_lines.append({"spans": current_spans, "bbox": tuple(current_bbox), "dir": line_dir})
+        block["lines"] = fixed_lines
+    return tdict
+
+
+def _resolve_horizontal_run_overlaps(layout_items: List[dict]) -> List[dict]:
+    """Push later horizontal sibling runs right only when reconstructed width
+    would overlap the previous run on the same baseline."""
+    if not layout_items:
+        return layout_items
+    items = sorted(layout_items, key=lambda d: (round(d["baseline_y_pdf"], 3), d["x_pdf"]))
+    prev = None
+    for item in items:
+        if not item.get("eligible_for_nudge", False):
+            prev = item if item.get("is_horizontal", False) else prev
+            continue
+        if prev is None or not prev.get("eligible_for_nudge", False):
+            prev = item
+            continue
+        if not _same_text_line(item["baseline_y_pdf"], prev["baseline_y_pdf"], item["font_size_fc"], prev["font_size_fc"]):
+            prev = item
+            continue
+        prev_right = prev["x_pdf"] + max(prev["orig_width_pdf"], prev["render_width_pdf"])
+        this_left = item["x_pdf"]
+        pad = 0.18 * max(prev["font_size_fc"], item["font_size_fc"], 1.0)
+        if prev_right + pad > this_left:
+            item["x_pdf"] += (prev_right + pad) - this_left
+        prev = item
+    return items
+
+
+
+
+_MIXED_FRACTION_RE = re.compile(
+    r"""(?:
+        \d+\s+\d+/\d+
+        |
+        \d+'-\d+\s+\d+/\d+"?
+    )""",
+    re.VERBOSE,
+)
+
+
+def _is_near_vertical_angle(angle_deg: float, tol_deg: float = 15.0) -> bool:
+    a = angle_deg % 180.0
+    return abs(a - 90.0) <= tol_deg
+
+
+def _has_mixed_fraction_text(text: str) -> bool:
+    return bool(_MIXED_FRACTION_RE.search((text or '').strip()))
+
+
+def _projected_text_extents(item: dict, scale: float, font_size_fc: Optional[float] = None) -> Tuple[float, float, float, float]:
+    """Projected extents in PDF-space for overlap checks.
+
+    Returns (along_min, along_max, normal_min, normal_max). The anchor model
+    matches how this importer places text today: left-justified runs extend
+    forward from the insertion point; centered runs extend equally both ways.
+    """
+    fs = float(font_size_fc if font_size_fc is not None else item.get('font_size_fc', 0.0))
+    s = max(scale, 1e-12)
+    width_pdf = _estimate_text_width_mm(item.get('content', ''), fs) / s
+    height_pdf = fs / s
+
+    a = math.radians(float(item.get('angle_deg', 0.0)))
+    ux, uy = math.cos(a), math.sin(a)
+    nx, ny = -uy, ux
+
+    x = float(item.get('x_pdf', 0.0))
+    y = float(item.get('baseline_y_pdf', 0.0))
+    anchor_along = x * ux + y * uy
+    anchor_normal = x * nx + y * ny
+
+    just = item.get('justification', 'Left')
+    if just == 'Center':
+        along_min = anchor_along - width_pdf / 2.0
+        along_max = anchor_along + width_pdf / 2.0
+    elif just == 'Right':
+        along_min = anchor_along - width_pdf
+        along_max = anchor_along
+    else:
+        along_min = anchor_along
+        along_max = anchor_along + width_pdf
+
+    normal_min = anchor_normal - height_pdf / 2.0
+    normal_max = anchor_normal + height_pdf / 2.0
+    return along_min, along_max, normal_min, normal_max
+
+
+def _intervals_overlap(a0: float, a1: float, b0: float, b1: float, tol: float = 0.0) -> bool:
+    return not (a1 < b0 - tol or b1 < a0 - tol)
+
+
+def _axis_gap(a0: float, a1: float, b0: float, b1: float) -> float:
+    if _intervals_overlap(a0, a1, b0, b1):
+        return 0.0
+    if a1 < b0:
+        return b0 - a1
+    return a0 - b1
+
+
+def _apply_vertical_mixed_fraction_compaction(layout_items: List[dict], scale: float) -> List[dict]:
+    """Shrink risky rotated mixed-fraction runs slightly when they would collide
+    along their text direction.
+
+    This is intentionally conservative: it touches only near-vertical mixed
+    fractions and only when a projected overlap risk exists.
+    """
+    if not layout_items:
+        return layout_items
+
+    for item in layout_items:
+        text = item.get('content', '')
+        angle = float(item.get('angle_deg', 0.0))
+        if not (_is_near_vertical_angle(angle) and _has_mixed_fraction_text(text)):
+            continue
+
+        base_fs = float(item.get('font_size_fc', 0.0))
+        if base_fs <= 0:
+            continue
+
+        def risky(test_fs: float) -> bool:
+            a0, a1, n0, n1 = _projected_text_extents(item, scale, test_fs)
+            normal_tol = 0.20 * max(test_fs / max(scale, 1e-12), 1.0)
+            min_clearance = 0.18 * max(test_fs / max(scale, 1e-12), 1.0)
+            for other in layout_items:
+                if other is item:
+                    continue
+                oa0, oa1, on0, on1 = _projected_text_extents(other, scale)
+                if not _intervals_overlap(n0, n1, on0, on1, tol=normal_tol):
+                    continue
+                if _axis_gap(a0, a1, oa0, oa1) < min_clearance:
+                    return True
+            return False
+
+        if risky(base_fs):
+            new_fs = base_fs
+            for factor in (0.92, 0.88, 0.84):
+                trial = base_fs * factor
+                if not risky(trial):
+                    new_fs = trial
+                    break
+                new_fs = trial
+            item['font_size_fc'] = new_fs
+
+    return layout_items
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Raster page import (scanned PDF fallback)
+# ──────────────────────────────────────────────────────────────────────
+def _import_page_as_raster(pdf_doc, page, page_num: int, page_h: float,
+                           opts: ImportOptions, scale: float,
+                           parent, fc_doc):
+    """Render a PDF page as a raster image and place it as an ImagePlane.
+
+    Used for scanned PDFs or pages with no usable vector content.
+    """
+    dpi = opts.raster_dpi or 200
+    zoom = dpi / 72.0
+    mat = fitz.Matrix(zoom, zoom)
+    pix = page.get_pixmap(matrix=mat)
+
+    # Save to temp file
+    tmpdir = os.path.join(FreeCAD.getUserAppDataDir(),
+                          "Mod", "PDFVectorImporter", "temp")
+    os.makedirs(tmpdir, exist_ok=True)
+    img_path = os.path.join(tmpdir, f"page_{page_num}_{dpi}dpi.png")
+    pix.save(img_path)
+
+    # Calculate real-world size in mm from PDF page dimensions
+    w_mm = page.rect.width * MM_PER_PT
+    h_mm = page.rect.height * MM_PER_PT
+
+    try:
+        ip = fc_doc.addObject("Image::ImagePlane", f"Page_{page_num}_raster")
+        ip.ImageFile = img_path
+        ip.XSize = w_mm
+        ip.YSize = h_mm
+        ip.Placement = Placement(_v(0, 0, -0.1), Rotation())  # slightly behind vectors
+        parent.addObject(ip)
+        _msg(f"Placed page {page_num} as {dpi} DPI raster ({w_mm:.0f} x {h_mm:.0f} mm)")
+    except (RuntimeError, OSError, ValueError, TypeError) as e:
+        _warn(f"Raster placement failed: {e}\n"
+              f"Image saved to: {img_path}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Page importer
+# ──────────────────────────────────────────────────────────────────────
+def import_pdf_page(pdf_path: str, page_num: int = 1,
+                    opts: Optional[ImportOptions] = None):
+    """Import a single PDF page into the active FreeCAD document."""
+    if opts is None:
+        opts = ImportOptions(ignore_images=not IMAGE_WB)
+    fc_doc = _ensure_doc()  # Store reference — don't rely on ActiveDocument later
+
+    pdf_doc = fitz.open(pdf_path)
+    if page_num < 1 or page_num > len(pdf_doc):
+        raise ValueError(f"Page {page_num} out of range 1..{len(pdf_doc)}")
+
+    page = pdf_doc.load_page(page_num - 1)
+    page_h = page.rect.height
+    scale = (MM_PER_PT if opts.scale_to_mm else 1.0) * opts.user_scale
+
+    # Top-level group
+    top_group = None
+    if opts.create_top_group:
+        top_group = fc_doc.addObject(
+            "App::DocumentObjectGroup", f"PDF_Page_{page_num}")
+
+    # ── Layer / color grouping ──
+    use_ocg = False
+    if opts.layer_mode in ("auto", "ocg"):
+        try:
+            ocgs = pdf_doc.get_ocgs()
+            use_ocg = bool(ocgs)
+        except (RuntimeError, AttributeError, ValueError):
+            use_ocg = False
+
+    group_by_color = False
+    if opts.layer_mode == "color":
+        group_by_color = True
+    elif opts.layer_mode == "none":
+        group_by_color = False
+    elif opts.layer_mode == "ocg":
+        group_by_color = False
+    else:  # auto
+        group_by_color = opts.group_by_color and not use_ocg
+
+    color_groups: Dict[Tuple[float, float, float], object] = {}
+    layer_groups: Dict[str, object] = {}
+
+    def _parent_for(stroke_rgb, layer_name):
+        parent = top_group or fc_doc
+        if use_ocg and layer_name:
+            if layer_name not in layer_groups:
+                layer_groups[layer_name] = _make_group(parent, f"Layer_{layer_name}", fc_doc)
+            return layer_groups[layer_name]
+        if group_by_color and stroke_rgb is not None:
+            key = stroke_rgb
+            if key not in color_groups:
+                r, g, b = key
+                label = f"Color_{int(r*255):02X}{int(g*255):02X}{int(b*255):02X}"
+                color_groups[key] = _make_group(parent, label, fc_doc)
+            return color_groups[key]
+        return parent
+
+    # ── Progress dialog (created early to cover all phases) ──
+    _import_start = time.time()
+    progress = None
+    QtWidgets = None
+    try:
+        if FreeCAD.GuiUp:
+            from PySide6 import QtWidgets, QtCore
+    except ImportError:
+        try:
+            from PySide2 import QtWidgets, QtCore
+        except ImportError:
+            QtWidgets = None
+
+    if FreeCAD.GuiUp and QtWidgets:
+        try:
+            progress = QtWidgets.QProgressDialog(
+                f"Importing PDF page {page_num}...", "Cancel", 0, 100)
+            progress.setWindowTitle("PDF Vector Importer")
+            progress.setMinimumDuration(500)  # only show if > 500ms
+            progress.setWindowModality(QtCore.Qt.WindowModal)
+            progress.setValue(0)
+        except (AttributeError, RuntimeError, TypeError):
+            progress = None
+
+    def _progress_check_cancel():
+        """Check if user cancelled; closes dialog and returns True if cancelled."""
+        if progress and progress.wasCanceled():
+            _warn("Import cancelled by user")
+            progress.close()
+            return True
+        return False
+
+    def _progress_update(value, label):
+        """Update progress dialog value and label, process events."""
+        if not progress:
+            return
+        elapsed = time.time() - _import_start
+        progress.setValue(value)
+        progress.setLabelText(f"{label}  [{elapsed:.1f}s]")
+        try:
+            QtWidgets.QApplication.processEvents()
+        except (AttributeError, RuntimeError):
+            pass
+
+    # ── Vector drawings ──
+    drawings = page.get_drawings()
+    n_drawings = len(drawings)
+    n_images = len(page.get_images(full=True))
+    if opts.verbose:
+        _msg(f"PDF page {page_num}: {n_drawings} drawing groups, "
+             f"{n_images} embedded images found")
+
+    # ── Determine effective import mode ──
+    effective_mode = opts.import_mode
+    if effective_mode == "auto":
+        # Auto-detect: profile the page content to choose best mode
+        _progress_update(2, "Analyzing page content...")
+        tdict = page.get_text("dict")
+        n_text = sum(1 for b in tdict.get("blocks", []) if b.get("type") == 0)
+        if n_drawings < 5 and n_text < 3:
+            # Scanned / pure raster page — no usable vector content
+            effective_mode = "raster"
+        elif n_drawings > 3000 and n_images > 20:
+            # GIS / map PDF — thousands of contour vectors on top of tiled
+            # raster imagery (USGS topo maps, aerial surveys, etc.).
+            # Importing vectors produces unusable results; render as raster.
+            effective_mode = "raster"
+        elif n_images > 0 and n_drawings > 0:
+            # Has both images and vectors — hybrid gives best result
+            effective_mode = "hybrid"
+        else:
+            effective_mode = "vectors"
+        if opts.verbose:
+            _msg(f"Page {page_num}: auto-detected mode = {effective_mode}")
+
+    if _progress_check_cancel():
+        if progress:
+            progress.close()
+        pdf_doc.close()
+        fc_doc.recompute()
+        return top_group
+
+    # ── Raster-only mode ──
+    if effective_mode == "raster":
+        _msg(f"Page {page_num}: rendering at {opts.raster_dpi} DPI (raster mode)")
+        _progress_update(5, f"Rendering raster image at {opts.raster_dpi} DPI...")
+        _import_page_as_raster(
+            pdf_doc, page, page_num, page_h, opts, scale,
+            top_group or fc_doc, fc_doc)
+        if progress:
+            progress.setValue(100)
+            progress.close()
+        pdf_doc.close()
+        fc_doc.recompute()
+        _msg(f"Page {page_num}: imported as raster image")
+        return top_group
+
+    # ── Hybrid mode: place raster background, then overlay vectors ──
+    if effective_mode == "hybrid":
+        _msg(f"Page {page_num}: placing {opts.raster_dpi} DPI raster background…")
+        _progress_update(5, f"Rendering raster image at {opts.raster_dpi} DPI...")
+        _import_page_as_raster(
+            pdf_doc, page, page_num, page_h, opts, scale,
+            top_group or fc_doc, fc_doc)
+        _msg(f"Page {page_num}: overlaying vector geometry…")
+        # Fall through to vector import below
+
+    # ── Legacy raster fallback (vectors mode, backwards compat) ──
+    if effective_mode == "vectors" and opts.raster_fallback and n_drawings < 5:
+        tdict = page.get_text("dict")
+        n_text = sum(1 for b in tdict.get("blocks", []) if b.get("type") == 0)
+        if n_text < 3:
+            _msg(f"Page {page_num}: appears to be scanned/raster — "
+                 f"rendering at {opts.raster_dpi} DPI")
+            _progress_update(5, f"Rendering raster image at {opts.raster_dpi} DPI...")
+            _import_page_as_raster(
+                pdf_doc, page, page_num, page_h, opts, scale,
+                top_group or fc_doc, fc_doc)
+            if progress:
+                progress.setValue(100)
+                progress.close()
+            pdf_doc.close()
+            fc_doc.recompute()
+            _msg(f"Page {page_num}: imported as raster image")
+            return top_group
+
+    # ── Hatch detection ──
+    hatch_indices = set()
+    hatch_drawings = []
+    if opts.hatch_mode != "import" and n_drawings > 20:
+        try:
+            import PDFHatchDetector
+            hatch_indices = PDFHatchDetector.detect(drawings)
+            if hatch_indices:
+                n_hatch = len(hatch_indices)
+                if opts.verbose:
+                    _msg(f"Page {page_num}: {n_hatch} hatch lines detected "
+                         f"(mode: {opts.hatch_mode})")
+                if opts.hatch_mode == "skip":
+                    drawings = [d for i, d in enumerate(drawings)
+                                if i not in hatch_indices]
+                    n_drawings = len(drawings)
+                elif opts.hatch_mode == "group":
+                    hatch_drawings = [d for i, d in enumerate(drawings)
+                                      if i in hatch_indices]
+                    drawings = [d for i, d in enumerate(drawings)
+                                if i not in hatch_indices]
+                    n_drawings = len(drawings)
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, IndexError) as e:
+            _warn(f"Hatch detection failed: {e}")
+
+    obj_count = 0
+
+    # ── Heavy-page detection ──
+    # When a page has a huge number of drawing groups, automatically engage
+    # safe-mode behavior: larger compound batches, throttled progress updates,
+    # and guarded arc fitting.  This keeps vector import fully intact but
+    # stops FreeCAD from drowning in per-object GUI overhead.
+    _is_heavy = (opts.heavy_page_threshold > 0
+                 and n_drawings > opts.heavy_page_threshold)
+    if _is_heavy and opts.verbose:
+        _msg(f"Page {page_num}: heavy page detected ({n_drawings} groups > "
+             f"{opts.heavy_page_threshold}) — engaging safe-mode batching")
+
+    # ── Compound batching state ──
+    # Collect shapes in memory and commit them as Part::Compound objects
+    # instead of one Part::Feature per wire.  This reduces GDI handle count
+    # by ~batch_size× while keeping every vector path in the document.
+    _batch_size = opts.compound_batch_size if opts.compound_batch_size > 0 else 0
+    # Heavy pages get a larger batch to further reduce object count
+    if _is_heavy and _batch_size:
+        _batch_size = max(_batch_size, 500)
+    # Batch by (parent, color, width, dash_style) so styling is preserved
+    _batch_shapes: Dict[str, List] = {}   # style_key → list of shapes
+    _batch_parents: Dict[str, object] = {}  # style_key → parent object
+    _batch_styles: Dict[str, Tuple] = {}   # style_key → (stroke_rgb, width, dashes)
+    _batch_idx: Dict[str, int] = {}        # parent_key → compound index
+
+    def _flush_batch(style_key: str = None, force: bool = False):
+        """Flush accumulated shapes into Part::Compound objects."""
+        nonlocal obj_count
+        keys = [style_key] if style_key else list(_batch_shapes.keys())
+        for key in keys:
+            shapes = _batch_shapes.get(key, [])
+            if not shapes:
+                continue
+            if not force and len(shapes) < _batch_size:
+                continue
+            parent = _batch_parents[key]
+            parent_name = parent.Name if hasattr(parent, 'Name') else str(id(parent))
+            idx = _batch_idx.get(parent_name, 0) + 1
+            _batch_idx[parent_name] = idx
+            stroke_rgb, width, dashes = _batch_styles.get(key, (None, None, None))
+            try:
+                compound = Part.makeCompound(shapes)
+                obj = fc_doc.addObject("Part::Feature", f"Batch_{idx}")
+                obj.Shape = compound
+                _apply_style(obj, stroke_rgb, width, dashes, opts)
+                parent.addObject(obj)
+                obj_count += 1
+            except (RuntimeError, ValueError, TypeError) as e:
+                # Fallback: create individually if compound fails
+                _warn(f"Compound batch failed ({len(shapes)} shapes): {e}")
+                for shp in shapes:
+                    try:
+                        obj = fc_doc.addObject("Part::Feature", "Wire")
+                        obj.Shape = shp
+                        _apply_style(obj, stroke_rgb, width, dashes, opts)
+                        parent.addObject(obj)
+                        obj_count += 1
+                    except (RuntimeError, ValueError, TypeError):
+                        pass
+            _batch_shapes[key] = []
+
+    def _add_to_batch(shape, parent, stroke_rgb, width, dashes):
+        """Add a shape to the batch or create immediately if batching disabled."""
+        nonlocal obj_count
+        if not _batch_size:
+            # No batching — original behavior
+            obj = fc_doc.addObject("Part::Feature", "Wire")
+            obj.Shape = shape
+            _apply_style(obj, stroke_rgb, width, dashes, opts)
+            parent.addObject(obj)
+            obj_count += 1
+            return
+        parent_name = parent.Name if hasattr(parent, 'Name') else str(id(parent))
+        # Build a style key so shapes with different visual styles stay separate
+        dash_key = tuple(dashes) if dashes else ()
+        style_key = f"{parent_name}|{stroke_rgb}|{width}|{dash_key}"
+        if style_key not in _batch_shapes:
+            _batch_shapes[style_key] = []
+            _batch_parents[style_key] = parent
+            _batch_styles[style_key] = (stroke_rgb, width, dashes)
+        _batch_shapes[style_key].append(shape)
+        if len(_batch_shapes[style_key]) >= _batch_size:
+            _flush_batch(style_key, force=True)
+
+    # ── Progress update frequency ──
+    # On heavy pages, throttle to every 500 paths instead of 100.
+    # This alone prevents thousands of Qt timer allocations that cause
+    # the GDI handle exhaustion.
+    _progress_interval = 500 if _is_heavy else 100
+
+    # Update progress range now that we know the geometry count.
+    # Layout: 0-9 = pre-analysis, 10-79 = geometry, 80-89 = text,
+    #         90-95 = batching/cleanup, 96-100 = final placement.
+    if progress:
+        progress.setMaximum(100)
+    _progress_update(10, f"Processing geometry... 0/{n_drawings}")
+
+    for pg_idx, path_group in enumerate(drawings):
+        # Throttled progress updates — every 500 on heavy pages, 100 otherwise.
+        # Each processEvents() call allocates Qt timers; doing it 19k× is
+        # what exhausts Windows GDI handles.
+        if progress and pg_idx % _progress_interval == 0:
+            geo_pct = 10 + int(69 * pg_idx / max(n_drawings, 1))
+            _progress_update(
+                geo_pct,
+                f"Processing geometry... {pg_idx}/{n_drawings}")
+            if progress.wasCanceled():
+                _warn("Import cancelled by user")
+                # Flush any pending batches before returning
+                if _batch_size:
+                    _flush_batch(force=True)
+                progress.close()
+                pdf_doc.close()
+                fc_doc.recompute()
+                return top_group
+
+        items = path_group.get("items", [])
+        if not items:
+            continue
+
+        stroke = path_group.get("color") or path_group.get("stroke")
+        stroke_rgb = _norm_color(stroke)
+        fill = path_group.get("fill")
+        close_path = path_group.get("closePath", False)
+        width = _as_float(path_group.get("width") or path_group.get("lineWidth"))
+        dashes = _parse_dashes(path_group.get("dashes"))
+        layer_name = path_group.get("oc") or path_group.get("layer")
+
+        parent = _parent_for(stroke_rgb, layer_name)
+
+        # Build edges per sub-path
+        current_pt: Optional[Vector] = None
+        sub_edges: List = []
+        wires_edges: List[List] = []
+
+        def flush_sub(close_flag: bool):
+            nonlocal sub_edges, current_pt
+            if sub_edges:
+                wires_edges.append((sub_edges[:], close_flag))
+            sub_edges = []
+            current_pt = None
+
+        for item in items:
+            kind = item[0]
+            data = item[1:]
+
+            if kind == "m":  # moveto
+                flush_sub(False)
+                x, y = _parse_point(data)
+                current_pt = _to_fc((x, y), page_h, opts, scale)
+
+            elif kind == "l":  # lineto
+                # PyMuPDF may give ('l', start_pt, end_pt) with BOTH points,
+                # or ('l', end_pt) with just the destination.
+                if len(data) >= 2 and _is_point(data[0]) and _is_point(data[1]):
+                    # Two-point format: self-contained line segment
+                    x0, y0 = _xy(data[0])
+                    x1, y1 = _xy(data[1])
+                    p_start = _to_fc((x0, y0), page_h, opts, scale)
+                    p_end   = _to_fc((x1, y1), page_h, opts, scale)
+                    seg = _len2d(p_start, p_end)
+                    if seg > max(ZERO_TOL, opts.min_seg_len):
+                        e = _edge_line(p_start, p_end)
+                        if e:
+                            sub_edges.append(e)
+                    current_pt = p_end
+                else:
+                    # Single-point format: line from current_pt to destination
+                    if current_pt is None:
+                        continue
+                    x, y = _parse_point(data)
+                    p = _to_fc((x, y), page_h, opts, scale)
+                    seg = _len2d(current_pt, p)
+                    if seg > max(ZERO_TOL, opts.min_seg_len):
+                        e = _edge_line(current_pt, p)
+                        if e:
+                            sub_edges.append(e)
+                    current_pt = p
+
+            elif kind == "c":  # cubic Bezier
+                # PyMuPDF may give ('c', P0, P1, P2, P3) with 4 points
+                # or ('c', P1, P2, P3) with 3 control/end points + implicit start
+                if len(data) == 4 and all(_is_point(d) for d in data):
+                    # Four-point format: all points explicit
+                    x0, y0 = _xy(data[0])
+                    x1, y1 = _xy(data[1])
+                    x2, y2 = _xy(data[2])
+                    x3, y3 = _xy(data[3])
+                    p0 = _to_fc((x0, y0), page_h, opts, scale)
+                    p1 = _to_fc((x1, y1), page_h, opts, scale)
+                    p2 = _to_fc((x2, y2), page_h, opts, scale)
+                    p3 = _to_fc((x3, y3), page_h, opts, scale)
+                    current_pt = p0  # set current in case it was None
+                else:
+                    if current_pt is None:
+                        continue
+                    try:
+                        (x1, y1), (x2, y2), (x3, y3) = _parse_cubic(data)
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    p0 = current_pt
+                    p1 = _to_fc((x1, y1), page_h, opts, scale)
+                    p2 = _to_fc((x2, y2), page_h, opts, scale)
+                    p3 = _to_fc((x3, y3), page_h, opts, scale)
+
+                # Try arc reconstruction first
+                arc = _arc_from_cubic(p0, p1, p2, p3, opts)
+                if arc is not None:
+                    e = _edge_arc(*arc)
+                    if e is not None:
+                        sub_edges.append(e)
+                        current_pt = p3
+                        continue
+
+                # Fallback: linearize the cubic
+                chord = max(ZERO_TOL, _len2d(p0, p3))
+                N = max(4, min(opts.max_bezier_segments,
+                               int(math.ceil(chord / max(ZERO_TOL, opts.curve_step_mm)))))
+                prev = p0
+                for i in range(1, N + 1):
+                    t = i / float(N)
+                    q = _bezier_point(p0, p1, p2, p3, t)
+                    if _len2d(prev, q) > max(ZERO_TOL, opts.min_seg_len):
+                        e = _edge_line(prev, q)
+                        if e:
+                            sub_edges.append(e)
+                    prev = q
+                current_pt = p3
+
+            elif kind == "v":  # quadratic Bezier  (PDF rare but possible)
+                if current_pt is None:
+                    continue
+                try:
+                    (cx, cy), (ex, ey) = _parse_quad(data)
+                except (TypeError, ValueError, IndexError):
+                    continue
+                p0 = current_pt
+                # Promote quadratic to cubic:  CP1 = P0 + 2/3*(C-P0),  CP2 = P + 2/3*(C-P)
+                ctrl = _to_fc((cx, cy), page_h, opts, scale)
+                end  = _to_fc((ex, ey), page_h, opts, scale)
+                cp1 = p0 + (ctrl - p0) * (2.0 / 3.0)
+                cp2 = end + (ctrl - end) * (2.0 / 3.0)
+                # Reuse cubic logic
+                chord = max(ZERO_TOL, _len2d(p0, end))
+                N = max(4, min(opts.max_bezier_segments,
+                               int(math.ceil(chord / max(ZERO_TOL, opts.curve_step_mm)))))
+                prev = p0
+                for i in range(1, N + 1):
+                    t = i / float(N)
+                    q = _bezier_point(p0, cp1, cp2, end, t)
+                    if _len2d(prev, q) > max(ZERO_TOL, opts.min_seg_len):
+                        e = _edge_line(prev, q)
+                        if e:
+                            sub_edges.append(e)
+                    prev = q
+                current_pt = end
+
+            elif kind == "y":  # curveto with final point == control point 2
+                if current_pt is None:
+                    continue
+                try:
+                    (x1, y1), (x3, y3) = _parse_quad(data)
+                except (TypeError, ValueError, IndexError):
+                    continue
+                p0 = current_pt
+                p1 = _to_fc((x1, y1), page_h, opts, scale)
+                p3 = _to_fc((x3, y3), page_h, opts, scale)
+                p2 = p3  # control point 2 == endpoint for 'y' command
+                chord = max(ZERO_TOL, _len2d(p0, p3))
+                N = max(4, min(opts.max_bezier_segments,
+                               int(math.ceil(chord / max(ZERO_TOL, opts.curve_step_mm)))))
+                prev = p0
+                for i in range(1, N + 1):
+                    t = i / float(N)
+                    q = _bezier_point(p0, p1, p2, p3, t)
+                    if _len2d(prev, q) > max(ZERO_TOL, opts.min_seg_len):
+                        e = _edge_line(prev, q)
+                        if e:
+                            sub_edges.append(e)
+                    prev = q
+                current_pt = p3
+
+            elif kind == "re":  # rectangle
+                flush_sub(False)
+                x, y, w, h = _parse_rect(data)
+                if abs(w) < ZERO_TOL or abs(h) < ZERO_TOL:
+                    continue
+                c1 = _to_fc((x, y), page_h, opts, scale)
+                c2 = _to_fc((x + w, y), page_h, opts, scale)
+                c3 = _to_fc((x + w, y + h), page_h, opts, scale)
+                c4 = _to_fc((x, y + h), page_h, opts, scale)
+                edges = [_edge_line(c1, c2), _edge_line(c2, c3),
+                         _edge_line(c3, c4), _edge_line(c4, c1)]
+                edges = [e for e in edges if e is not None]
+                wires_edges.append((edges, True))
+
+            elif kind == "h":  # closePath
+                flush_sub(True)
+            # else: unknown command — silently skip
+
+        # Flush any remaining sub-path
+        flush_sub(close_path)
+
+        # Post-process: detect polyline arcs and replace with true Part::Arc.
+        # On heavy pages, guard arc fitting — only attempt on candidate chains
+        # with a reasonable edge count.  Giant polyline runs (>64 edges) on
+        # monster PDFs are almost certainly contour lines or map features, not
+        # arcs from a CAD exporter.  The arc fitter still runs; it just skips
+        # chains that are obviously not arc candidates.
+        if opts.detect_arcs:
+            processed = []
+            for edges, is_closed in wires_edges:
+                if _is_heavy and len(edges) > 64:
+                    # Heavy-page guard: skip arc fitting on very long chains
+                    processed.append((edges, is_closed))
+                else:
+                    new_edges = _polyline_edges_to_arcs(edges, opts)
+                    processed.append((new_edges, is_closed))
+            wires_edges = processed
+
+        # Create FreeCAD objects from collected edges
+        for edges, is_closed in wires_edges:
+            want_face = ((opts.hatch_to_faces and fill is not None)
+                         or (opts.make_faces and is_closed))
+            if _batch_size and not want_face:
+                # Batch wires into compounds to reduce GDI handle count
+                try:
+                    wire = Part.Wire(edges)
+                    if is_closed and not wire.isClosed():
+                        if wire.Vertexes:
+                            p0 = wire.Vertexes[0].Point
+                            pN = wire.Vertexes[-1].Point
+                            if _len2d(_v(p0.x, p0.y), _v(pN.x, pN.y)) > ZERO_TOL:
+                                closer = Part.LineSegment(pN, p0).toShape()
+                                wire = Part.Wire(edges + [closer])
+                    _add_to_batch(wire, parent, stroke_rgb, width, dashes)
+                except (RuntimeError, ValueError, TypeError, AttributeError):
+                    pass
+            else:
+                # Faces and non-batchable shapes: create individually
+                obj = _make_shape_obj(edges, is_closed, make_face=want_face, fc_doc=fc_doc)
+                if obj is not None:
+                    _apply_style(obj, stroke_rgb, width, dashes, opts)
+                    parent.addObject(obj)
+                    obj_count += 1
+
+    # ── Flush remaining batched shapes ──
+    if _batch_size:
+        total_pending = sum(len(v) for v in _batch_shapes.values())
+        n_style_keys = len([k for k, v in _batch_shapes.items() if v])
+        if total_pending > 0:
+            _progress_update(80, f"Building compound 1/{n_style_keys}...")
+        _flush_idx = 0
+        for _fk in list(_batch_shapes.keys()):
+            if _batch_shapes.get(_fk):
+                _flush_idx += 1
+                if n_style_keys > 1:
+                    _progress_update(
+                        80 + int(5 * _flush_idx / max(n_style_keys, 1)),
+                        f"Building compound {_flush_idx}/{n_style_keys}...")
+                if _progress_check_cancel():
+                    pdf_doc.close()
+                    fc_doc.recompute()
+                    return top_group
+                _flush_batch(_fk, force=True)
+        if opts.verbose:
+            total_batches = sum(_batch_idx.values())
+            _msg(f"Page {page_num}: geometry batched into {total_batches} "
+                 f"compound(s) (batch_size={_batch_size})")
+
+    # ── Text import ──
+    if opts.import_text and opts.text_mode != "none":
+        _progress_update(86, "Importing text...")
+
+        if _progress_check_cancel():
+            pdf_doc.close()
+            fc_doc.recompute()
+            return top_group
+
+        # Try pdftocairo vector text (Geometry mode)
+        svg_text_done = False
+        if opts.text_mode == "geometry":
+            try:
+                from PDFVectorImporter.src.PDFSvgTextRenderer import render_text
+                text_parent = top_group or fc_doc
+                _progress_update(87, "Rendering text glyphs via pdftocairo...")
+                result = render_text(
+                    pdf_path, page_num, page_h, scale,
+                    fc_doc=fc_doc, parent_group=text_parent, flip_y=opts.flip_y)
+                if result and result.get("glyphs", 0) > 0:
+                    svg_text_done = True
+                    obj_count += 1
+                    n_glyphs = result['glyphs']
+                    _progress_update(
+                        89,
+                        f"Rendering text glyphs ({n_glyphs} items)...")
+                    if opts.verbose:
+                        _msg(f"  Text: {result['glyphs']} glyphs from "
+                             f"{result['shapes']} unique shapes (pdftocairo)")
+            except (RuntimeError, ValueError, TypeError, OSError, ImportError, AttributeError) as e:
+                _warn(f"SVG text renderer failed, falling back to Draft text: {e}")
+
+        # Fall back to Draft text (Labels mode, or if pdftocairo unavailable)
+        if not svg_text_done:
+          try:
+            tdict = page.get_text("dict")
+            text_group = _make_group(top_group or fc_doc, "Text", fc_doc)
+
+            for block in tdict.get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+
+                # Group lines within this block by Y + X proximity, but ONLY
+                # merge when at least one line is a fraction fragment (pure digits
+                # or "/").  This prevents BOM table cells from merging while still
+                # recombining split fractions with their main dimension text.
+                block_lines = block.get("lines", [])
+                y_groups: List[List] = []
+
+                def _is_frac_fragment(ln, main_sz=0) -> bool:
+                    """Is this line a fraction part (small-font orphaned digits or slash)?"""
+                    spans = ln.get("spans", [])
+                    txt = "".join(s.get("text", "") for s in spans).strip()
+                    if txt == "/":
+                        return True
+                    # Pure digits at SMALLER font size = fraction numerator/denominator
+                    if txt.isdigit() and spans:
+                        span_size = float(spans[0].get("size", 0))
+                        if main_sz > 0 and span_size < main_sz * 0.95:
+                            return True
+                    return False
+
+                # Find the dominant font size in this block for reference
+                block_main_size = 0
+                for ln in block_lines:
+                    for s in ln.get("spans", []):
+                        sz = float(s.get("size", 0))
+                        if sz > block_main_size:
+                            block_main_size = sz
+
+                for line in block_lines:
+                    spans = line.get("spans", [])
+                    if not spans:
+                        continue
+                    origin = spans[0].get("origin")
+                    ly = origin[1] if origin else line.get("bbox", (0, 0, 0, 0))[1]
+                    lbbox = line.get("bbox", (0, 0, 0, 0))
+                    lx_start = lbbox[0]
+                    lx_end = lbbox[2]
+                    line_is_frac = _is_frac_fragment(line, block_main_size)
+
+                    placed = False
+                    for grp in y_groups:
+                        ref_origin = grp[0]["spans"][0].get("origin")
+                        ref_y = ref_origin[1] if ref_origin else grp[0].get("bbox", (0, 0, 0, 0))[1]
+                        if abs(ly - ref_y) < 2.0:  # same Y
+                            grp_has_frac = any(_is_frac_fragment(g, block_main_size) for g in grp)
+                            grp_has_nonfrac = any(not _is_frac_fragment(g, block_main_size) for g in grp)
+
+                            # Only merge if at least one side is a fraction fragment.
+                            # NEVER merge two non-fragment lines into the same group —
+                            # that creates jumbled span sequences like "6'-9 15/16 (PIPE1-..."
+                            can_merge = False
+                            if line_is_frac:
+                                can_merge = True  # fragments always welcome
+                            elif grp_has_frac and not grp_has_nonfrac:
+                                can_merge = True  # non-frag joining a frag-only group
+                            # else: non-frag trying to join a group that already has a non-frag → refuse
+
+                            if can_merge:
+                                for existing in grp:
+                                    eb = existing.get("bbox", (0, 0, 0, 0))
+                                    gap = min(abs(lx_start - eb[2]), abs(eb[0] - lx_end))
+                                    if gap < 20:
+                                        grp.append(line)
+                                        placed = True
+                                        break
+                            if placed:
+                                break
+                    if not placed:
+                        y_groups.append([line])
+
+                # Count sibling groups on the same Y level so short horizontal
+                # text is not accidentally centered into neighboring runs.
+                _grp_y_map: Dict[int, int] = {}
+                for grp in y_groups:
+                    if not grp:
+                        continue
+                    spans0 = grp[0].get("spans", []) or []
+                    ref_o = spans0[0].get("origin") if spans0 else None
+                    gy = round(ref_o[1] if ref_o else grp[0].get("bbox", (0,0,0,0))[1])
+                    _grp_y_map[gy] = _grp_y_map.get(gy, 0) + 1
+
+                # Build layout items first so we can resolve same-line overlap
+                layout_items = []
+                for grp in y_groups:
+                    def _line_x(ln):
+                        o = ln.get("spans", [{}])[0].get("origin")
+                        return o[0] if o else ln.get("bbox", (0, 0, 0, 0))[0]
+                    grp.sort(key=_line_x)
+
+                    all_spans = []
+                    for line in grp:
+                        all_spans.extend(line.get("spans", []))
+                    if not all_spans:
+                        continue
+
+                    content = _reconstruct_line_text(all_spans)
+                    if not content.strip() or content.strip() == "/":
+                        continue
+
+                    all_x0 = min(ln.get("bbox", (9e9,0,0,0))[0] for ln in grp)
+                    all_x1 = max(ln.get("bbox", (0,0,-9e9,0))[2] for ln in grp)
+                    all_y1 = max(ln.get("bbox", (0,0,0,-9e9))[3] for ln in grp)
+                    _stripped = content.strip()
+                    is_short = len(_stripped) <= 40
+
+                    # Use PDF text origin (baseline) for positioning.
+                    # If origin unavailable, approximate from bbox + descender.
+                    _first_span = grp[0].get("spans", [{}])[0]
+                    first_origin = _first_span.get("origin")
+                    if first_origin:
+                        baseline_y = first_origin[1]
+                    else:
+                        # bbox[3] includes descenders; shift up by descender
+                        _desc = abs(float(_first_span.get("descender", 0.15)))
+                        _sz = float(_first_span.get("size", 12))
+                        baseline_y = all_y1 - _desc * _sz
+
+                    text_dir = grp[0].get("dir", (1.0, 0.0))
+                    if text_dir and len(text_dir) >= 2:
+                        dx, dy = float(text_dir[0]), float(text_dir[1])
+                        is_horizontal = _is_near_horizontal(dx, dy)
+                        angle_deg = -math.degrees(math.atan2(dy, dx))
+                    else:
+                        dx, dy = 1.0, 0.0
+                        is_horizontal = True
+                        angle_deg = 0.0
+
+                    _spans0 = grp[0].get("spans", []) or []
+                    _ref_o = _spans0[0].get("origin") if _spans0 else None
+                    _gy = round(_ref_o[1] if _ref_o else grp[0].get("bbox", (0,0,0,0))[1])
+                    has_siblings = _grp_y_map.get(_gy, 1) > 1
+
+                    if is_short and is_horizontal and not has_siblings:
+                        x_pdf = (all_x0 + all_x1) / 2.0
+                        justification = "Center"
+                    else:
+                        x_pdf = first_origin[0] if first_origin else all_x0
+                        justification = "Left"
+
+                    size_pt = max(float(s.get("size", 3)) for s in all_spans)
+                    font = str(all_spans[0].get("font", ""))
+                    # Grab PyMuPDF normalised font metrics for baseline offset
+                    _asc = float(all_spans[0].get("ascender", 0.8))
+                    _desc = float(all_spans[0].get("descender", -0.2))
+                    if "/" in _stripped and _stripped.replace("/", "").isdigit():
+                        size_pt *= 0.65
+                    elif not is_horizontal and " " in _stripped and "/" in _stripped:
+                        size_pt *= 0.85
+
+                    font_size_fc = size_pt * scale
+                    render_width_pdf = _estimate_text_width_mm(content, font_size_fc) / max(scale, 1e-12)
+                    orig_width_pdf = max(0.0, all_x1 - all_x0)
+
+                    layout_items.append({
+                        "content": content,
+                        "font": font,
+                        "font_size_fc": font_size_fc,
+                        "angle_deg": angle_deg,
+                        "is_horizontal": is_horizontal,
+                        "baseline_y_pdf": baseline_y,
+                        "x_pdf": x_pdf,
+                        "orig_width_pdf": orig_width_pdf,
+                        "render_width_pdf": render_width_pdf,
+                        "justification": justification,
+                        "eligible_for_nudge": bool(is_horizontal and justification == "Left" and has_siblings),
+                        "ascender": _asc,
+                        "descender": _desc,
+                    })
+
+                layout_items = _resolve_horizontal_run_overlaps(layout_items)
+                layout_items = _apply_vertical_mixed_fraction_compaction(layout_items, scale)
+
+                for item in layout_items:
+                    pos = _to_fc((item["x_pdf"], item["baseline_y_pdf"]), page_h, opts, scale)
+                    # Draft.make_text anchors at the bottom-left of the text
+                    # box, but we have the PDF baseline position.  Shift down
+                    # (in FreeCAD Y-up space) by the descender so the glyph
+                    # baseline lands where the PDF specified it.
+                    _d = float(item.get("descender", -0.2))
+                    pos.y += _d * item["font_size_fc"]
+                    try:
+                        rot = Rotation(Vector(0, 0, 1), item["angle_deg"])
+                        t = Draft.make_text([item["content"]], placement=Placement(pos, rot))
+                        try:
+                            t.ViewObject.FontSize = item["font_size_fc"]
+                            if item["font"]:
+                                t.ViewObject.FontName = item["font"]
+                            t.ViewObject.Justification = item["justification"]
+                        except (AttributeError, RuntimeError, TypeError, ValueError):
+                            pass
+                        text_group.addObject(t)
+                        obj_count += 1
+                    except (RuntimeError, ValueError, TypeError, AttributeError):
+                        pass
+          except (RuntimeError, ValueError, TypeError, AttributeError) as e:
+            _warn(f"Text import failed: {e}")
+
+    # ── Build hatch group (if group mode) ──
+    if hatch_drawings and opts.hatch_mode == "group":
+        try:
+            hatch_group = _make_group(top_group or fc_doc, "Hatching", fc_doc)
+            for pg_idx, path_group in enumerate(hatch_drawings):
+                items = path_group.get("items", [])
+                if not items:
+                    continue
+                stroke = path_group.get("color") or path_group.get("stroke")
+                stroke_rgb = _norm_color(stroke)
+                current_pt = None
+                sub_edges = []
+                for item in items:
+                    kind = item[0]
+                    data = item[1:]
+                    if kind == "m":
+                        if sub_edges:
+                            try:
+                                wire = Part.Wire(sub_edges)
+                                obj = fc_doc.addObject("Part::Feature", "Hatch")
+                                obj.Shape = wire
+                                hatch_group.addObject(obj)
+                                if stroke_rgb:
+                                    try:
+                                        obj.ViewObject.LineColor = stroke_rgb
+                                    except (AttributeError, RuntimeError, TypeError):
+                                        pass
+                                obj_count += 1
+                            except (RuntimeError, ValueError, TypeError, AttributeError):
+                                pass
+                            sub_edges = []
+                        pt = data[0] if data else None
+                        if pt and hasattr(pt, 'x'):
+                            current_pt = _to_fc((pt.x, pt.y), page_h, opts, scale)
+                    elif kind == "l" and current_pt is not None:
+                        if len(data) >= 2 and _is_point(data[0]) and _is_point(data[1]):
+                            p_start = _to_fc((_xy(data[0])), page_h, opts, scale)
+                            p_end = _to_fc((_xy(data[1])), page_h, opts, scale)
+                        else:
+                            pt = data[0] if data else None
+                            if pt and hasattr(pt, 'x'):
+                                p_start = current_pt
+                                p_end = _to_fc((pt.x, pt.y), page_h, opts, scale)
+                            else:
+                                continue
+                        seg = _len2d(p_start, p_end)
+                        if seg > ZERO_TOL:
+                            e = _edge_line(p_start, p_end)
+                            if e:
+                                sub_edges.append(e)
+                        current_pt = p_end
+                if sub_edges:
+                    try:
+                        wire = Part.Wire(sub_edges)
+                        obj = fc_doc.addObject("Part::Feature", "Hatch")
+                        obj.Shape = wire
+                        hatch_group.addObject(obj)
+                        obj_count += 1
+                    except (RuntimeError, ValueError, TypeError):
+                        pass
+            # Default hatching to hidden
+            try:
+                if hasattr(hatch_group, "ViewObject"):
+                    hatch_group.ViewObject.Visibility = False
+            except (AttributeError, RuntimeError):
+                pass
+            if opts.verbose:
+                _msg(f"Page {page_num}: {len(hatch_drawings)} hatch lines → "
+                     f"Hatching group (hidden)")
+        except (RuntimeError, ValueError, TypeError, AttributeError, IndexError) as e:
+            _warn(f"Hatch group creation failed: {e}")
+
+    # ── Embedded images ──
+    if not opts.ignore_images:
+        try:
+            img_group = _make_group(top_group or fc_doc, "Images", fc_doc)
+            imglist = page.get_images(full=True)
+            for img_info in imglist:
+                xref = img_info[0]
+                rects = page.get_image_rects(xref)
+                if not rects:
+                    continue
+                try:
+                    pix = fitz.Pixmap(pdf_doc, xref)
+                    if pix.alpha:
+                        pix = fitz.Pixmap(fitz.csRGB, pix)
+                    tmpdir = os.path.join(
+                        FreeCAD.getUserAppDataDir(),
+                        "Mod", "PDFVectorImporter", "temp")
+                    os.makedirs(tmpdir, exist_ok=True)
+                    img_path = os.path.join(tmpdir, f"img_p{page_num}_x{xref}.png")
+                    pix.save(img_path)
+                except (RuntimeError, OSError, ValueError, TypeError) as e:
+                    _warn(f"Image xref {xref} extract failed: {e}")
+                    continue
+                for r in rects:
+                    pt0 = _to_fc((r.x0, r.y0), page_h, opts, scale)
+                    pt1 = _to_fc((r.x1, r.y1), page_h, opts, scale)
+                    w = abs(pt1.x - pt0.x)
+                    h = abs(pt1.y - pt0.y)
+                    try:
+                        ip = fc_doc.addObject(
+                            "Image::ImagePlane", "Image")
+                        ip.ImageFile = img_path
+                        ip.XSize = w
+                        ip.YSize = h
+                        ip.Placement = Placement(
+                            _v(min(pt0.x, pt1.x), min(pt0.y, pt1.y), 0),
+                            Rotation())
+                        img_group.addObject(ip)
+                        obj_count += 1
+                    except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as e:
+                        _warn(f"Image placement failed: {e}")
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as e:
+            _warn(f"Image import failed: {e}")
+
+    # ── Final cleanup / placement ──
+    _progress_update(96, "Placing objects in document...")
+
+    # Clean up empty groups (Text, Images, Color groups with no content)
+    if top_group and hasattr(top_group, "Group"):
+        for child in top_group.Group[:]:
+            if (child.isDerivedFrom("App::DocumentObjectGroup")
+                    and hasattr(child, "Group") and not child.Group):
+                top_group.removeObject(child)
+                fc_doc.removeObject(child.Name)
+
+    _progress_update(98, "Placing objects in document...")
+
+    # Close progress
+    if progress:
+        progress.setValue(100)
+        progress.close()
+
+    pdf_doc.close()
+    fc_doc.recompute()
+    elapsed_total = time.time() - _import_start
+    _msg(f"Page {page_num}: {obj_count} objects created in {elapsed_total:.1f}s")
+    return top_group
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Multi-page entry point
+# ──────────────────────────────────────────────────────────────────────
+def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
+    """Import one or more pages from a PDF file."""
+    if opts is None:
+        opts = ImportOptions(ignore_images=not IMAGE_WB)
+    fc_doc = _ensure_doc()
+
+    pdoc = fitz.open(pdf_path)
+    total_pages = len(pdoc)
+    pdoc.close()
+
+    pages = opts.pages or [1]
+    for p in pages:
+        if p < 1 or p > total_pages:
+            _warn(f"Skipping out-of-range page {p} (PDF has {total_pages} pages)")
+            continue
+        try:
+            import_pdf_page(pdf_path, page_num=p, opts=opts)
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as e:
+            _err(f"Failed to import page {p}: {e}\n{traceback.format_exc()}")
+
+    fc_doc.recompute()
+
+    # Auto fit-all with orthographic top-down view
+    try:
+        import FreeCADGui
+        view = FreeCADGui.ActiveDocument.ActiveView
+        if view:
+            view.setCameraType("Orthographic")
+            view.viewTop()
+            view.fitAll()
+    except (ImportError, AttributeError, RuntimeError):
+        pass
+
+    return True

@@ -1,46 +1,36 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-*.whl
+# Large debug logs
+Full_Folder_Log.txt
+Full_Folder_Log.zip
 
-# Virtual environments
-.env
-.venv/
-env/
-venv/
+# Machine-local QA configs (contain user-specific paths)
+qa_config_local_*.json
+PDFVectorImporter/qa_config_local_*.json
 
-# IDE / Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# Large PDFs (keep small test fixtures only)
+# Sample/test PDFs
+TX_Alvord*
+PDFVectorImporter/TX_Alvord*
 *.pdf
 
-# Test result files
+# Binary documents (not diffable in git)
+*.docx
+*.xlsx
+
+# QA test results (generated output)
+qa_results.csv
+qa_results.json
 qa_results_*.csv
 qa_results_*.json
-*_verification_report*.csv
 
-# FreeCAD generated
-*.FCStd1
-*.FCBak
+# Python cache
+__pycache__/
+*.pyc
 
-# Logs
-*.log
+# Linter cache
+.ruff_cache/
 
-# Archives
-*.zip
+# Inspection snapshots
+_inspect_*/
 
-# Probe / debug output
-*.out
+# Debug probe scripts
+fc_cmd_probe*.py
+PDFVectorImporter/fc_cmd_probe*.py

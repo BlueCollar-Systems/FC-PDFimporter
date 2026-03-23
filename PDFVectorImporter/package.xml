@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+  <name>PDFVectorImporter</name>
+  <description>Import PDF vector drawings as editable FreeCAD geometry with arc reconstruction, text, scaling, and steel feature detection.</description>
+  <version>3.5.0</version>
+  <date>2026-03-14</date>
+  <maintainer email="support@bluecollar.systems">BlueCollar Systems</maintainer>
+  <!-- AI Contributors: Claude & Claude Code (Anthropic), ChatGPT & Codex (OpenAI),
+       Gemini (Google), Microsoft Copilot — collaborative AI development partners. -->
+  <license file="LICENSE">MIT</license>
+  <url type="repository" branch="main">https://github.com/BlueCollarSystems/FreeCAD-PDFVectorImporter</url>
+  <url type="readme">https://github.com/BlueCollarSystems/FreeCAD-PDFVectorImporter/blob/main/README.md</url>
+  <icon>resources/ImportPDFVector.svg</icon>
+
+  <content>
+    <workbench>
+      <classname>PDFVectorImporterWorkbench</classname>
+      <subdirectory>./</subdirectory>
+      <file>InitGui.py</file>
+
+      <!-- Python dependencies — Addon Manager will attempt pip install -->
+      <depend>PyMuPDF</depend>
+
+      <!-- FreeCAD version support -->
+      <freecadmin>0.21</freecadmin>
+      <freecadmax>1.99</freecadmax>
+    </workbench>
+  </content>
+
+  <tag>PDF</tag>
+  <tag>import</tag>
+  <tag>vector</tag>
+  <tag>CAD</tag>
+  <tag>fabrication</tag>
+  <tag>steel</tag>
+  <tag>drawing</tag>
+  <tag>arc reconstruction</tag>
+  <tag>scale</tag>
+</package>

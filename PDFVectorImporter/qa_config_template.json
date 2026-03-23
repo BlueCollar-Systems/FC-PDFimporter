@@ -1,0 +1,25 @@
+{
+  "workspace": "<YOUR_WORKSPACE_DIR>",
+  "adapters": {
+    "sketchup": {
+      "command": "python adapters/sketchup_adapter.py --config qa_config_local_full.json --test-id {test_id} --input \"{input}\"",
+      "timeout_seconds": 420
+    },
+    "freecad": {
+      "command": "python adapters/freecad_adapter.py --config qa_config_local_full.json --test-id {test_id} --input \"{input}\"",
+      "timeout_seconds": 1800
+    }
+  },
+  "sketchup": {
+    "automation_supported": false,
+    "exe": "<PATH_TO_SKETCHUP_EXE>",
+    "plugins_dir": "%APPDATA%/SketchUp/SketchUp 2017/SketchUp/Plugins",
+    "extension_root": "%APPDATA%/SketchUp/SketchUp 2017/SketchUp/Plugins/bc_pdf_vector_importer",
+    "ruby_harness": "adapters/sketchup_harness.rb"
+  },
+  "freecad": {
+    "freecadcmd_exe": "<PATH_TO_FREECADCMD_EXE>",
+    "mod_dir": "<PATH_TO_FREECAD_MOD_DIR>/PDFVectorImporter",
+    "python_harness": "adapters/freecad_harness.py"
+  }
+}
