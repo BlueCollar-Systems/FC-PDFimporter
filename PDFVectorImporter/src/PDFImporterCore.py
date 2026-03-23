@@ -820,6 +820,34 @@ def _same_text_line(y1: float, y2: float, size1: float, size2: float) -> bool:
     return abs(y1 - y2) <= tol
 
 
+# Characters whose glyphs extend below the baseline in standard fonts.
+_DESCENDER_CHARS = frozenset("gjpqyQJÇçÿýĝĵ@(){}[]|/\\$&")
+
+
+def _effective_descender(text: str, font_descender: float) -> float:
+    """Return the descender offset to apply for *text*.
+
+    Draft.make_text anchors at the bottom-left of the bounding box,
+    but PDF positions text at the baseline.  The full font descender
+    must be applied only when the rendered text actually contains
+    glyphs that descend below the baseline (g, j, p, q, y, etc.).
+
+    For all-caps or non-descending text (common in BOMs, dimension
+    labels, and title blocks), we apply only a small fraction of the
+    descender to avoid pushing the label below its correct position
+    within table cells and annotation boxes.
+    """
+    if not text:
+        return font_descender
+    has_descenders = any(ch in _DESCENDER_CHARS for ch in text)
+    if has_descenders:
+        return font_descender          # full correction
+    # No descending glyphs — apply ~15% of the descender as a minimal
+    # baseline-to-bottom-of-bbox gap (accounts for the tiny space most
+    # fonts leave below the baseline even for non-descending glyphs).
+    return font_descender * 0.15
+
+
 def _is_near_horizontal(dx: float, dy: float) -> bool:
     return abs(dx) > 0.95 and abs(dy) < 0.10
 
@@ -1862,7 +1890,12 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                     # box, but we have the PDF baseline position.  Shift down
                     # (in FreeCAD Y-up space) by the descender so the glyph
                     # baseline lands where the PDF specified it.
-                    _d = float(item.get("descender", -0.2))
+                    # Use _effective_descender() to reduce the offset for
+                    # non-descending text (all-caps BOM entries, dimensions).
+                    _d = _effective_descender(
+                        item["content"],
+                        float(item.get("descender", -0.2)),
+                    )
                     pos.y += _d * item["font_size_fc"]
                     try:
                         rot = Rotation(Vector(0, 0, 1), item["angle_deg"])
