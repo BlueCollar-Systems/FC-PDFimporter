@@ -820,8 +820,11 @@ def _same_text_line(y1: float, y2: float, size1: float, size2: float) -> bool:
     return abs(y1 - y2) <= tol
 
 
-# Characters whose glyphs extend below the baseline in standard fonts.
-_DESCENDER_CHARS = frozenset("gjpqyQJÇçÿýĝĵ@(){}[]|/\\$&")
+# Lowercase characters whose glyphs genuinely descend below the baseline.
+# ONLY lowercase forms — uppercase Q, J, etc. do NOT descend in standard
+# engineering/technical fonts.  Symbols like / ( ) [ ] | are rendered ON
+# the baseline in virtually all fonts used in shop drawings.
+_DESCENDER_CHARS = frozenset("gjpqyçÿýĝĵ")
 
 
 def _effective_descender(text: str, font_descender: float) -> float:
@@ -830,7 +833,8 @@ def _effective_descender(text: str, font_descender: float) -> float:
     Draft.make_text anchors at the bottom-left of the bounding box,
     but PDF positions text at the baseline.  The full font descender
     must be applied only when the rendered text actually contains
-    glyphs that descend below the baseline (g, j, p, q, y, etc.).
+    glyphs that descend below the baseline (g, j, p, q, y — lowercase
+    only).
 
     For all-caps or non-descending text (common in BOMs, dimension
     labels, and title blocks), we apply only a small fraction of the
