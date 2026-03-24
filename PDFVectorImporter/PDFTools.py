@@ -325,9 +325,12 @@ def _parse_page_spec(spec: str, pdf_path: str) -> list:
         part = part.strip()
         if not part:
             continue
-        if "-" in part:
-            a, b = part.split("-", 1)
-            out += list(range(int(a), int(b) + 1))
-        else:
-            out.append(int(part))
+        try:
+            if "-" in part:
+                a, b = part.split("-", 1)
+                out += list(range(int(a), int(b) + 1))
+            else:
+                out.append(int(part))
+        except ValueError:
+            continue  # skip non-numeric page specs
     return out or [1]

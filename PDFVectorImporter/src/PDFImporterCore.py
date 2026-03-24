@@ -146,7 +146,6 @@ def _parse_dashes(val) -> List[float]:
         return []
     if isinstance(val, str):
         # Extract numbers from between brackets: "[ 6 6 ] 0" → [6.0, 6.0]
-        import re
         bracket_match = re.search(r'\[([^\]]*)\]', val)
         if bracket_match:
             inner = bracket_match.group(1).strip()
@@ -452,10 +451,32 @@ def _make_group(parent, label: str, fc_doc=None):
     return grp
 
 
+_temp_files: List[str] = []
+
+def _register_temp_cleanup(path: str):
+    """Track a temp file for later cleanup."""
+    _temp_files.append(path)
+
+def cleanup_temp_files():
+    """Remove temp raster images from previous imports."""
+    removed = 0
+    for p in list(_temp_files):
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+                removed += 1
+            _temp_files.remove(p)
+        except OSError:
+            pass
+    if removed:
+        _msg(f"Cleaned up {removed} temporary raster image(s)")
+
 def _ensure_doc():
     doc = FreeCAD.ActiveDocument
     if doc is None:
         doc = FreeCAD.newDocument("PDF_Import")
+    # Clean up temp files from any previous import
+    cleanup_temp_files()
     return doc
 
 
@@ -1072,6 +1093,8 @@ def _import_page_as_raster(pdf_doc, page, page_num: int, page_h: float,
     os.makedirs(tmpdir, exist_ok=True)
     img_path = os.path.join(tmpdir, f"page_{page_num}_{dpi}dpi.png")
     pix.save(img_path)
+    # Register cleanup: remove temp image when document is closed or on next import
+    _register_temp_cleanup(img_path)
 
     # Calculate real-world size in mm from PDF page dimensions
     w_mm = page.rect.width * MM_PER_PT
@@ -1099,6 +1122,15 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
     if opts is None:
         opts = ImportOptions(ignore_images=not IMAGE_WB)
     fc_doc = _ensure_doc()  # Store reference — don't rely on ActiveDocument later
+
+    # Validate PDF before opening
+    try:
+        with open(pdf_path, 'rb') as f:
+            header = f.read(5)
+        if header != b'%PDF-':
+            raise ValueError(f"Not a valid PDF file: {pdf_path}")
+    except OSError as e:
+        raise ValueError(f"Cannot read PDF file: {e}")
 
     pdf_doc = fitz.open(pdf_path)
     if page_num < 1 or page_num > len(pdf_doc):
@@ -2068,19 +2100,33 @@ def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
         opts = ImportOptions(ignore_images=not IMAGE_WB)
     fc_doc = _ensure_doc()
 
+    # Reset ID counter once at the start of a multi-page import
+    try:
+        from .PDFPrimitives import reset_ids
+        reset_ids()
+    except ImportError:
+        pass
+
     pdoc = fitz.open(pdf_path)
     total_pages = len(pdoc)
     pdoc.close()
 
-    pages = opts.pages or [1]
-    for p in pages:
-        if p < 1 or p > total_pages:
-            _warn(f"Skipping out-of-range page {p} (PDF has {total_pages} pages)")
-            continue
-        try:
-            import_pdf_page(pdf_path, page_num=p, opts=opts)
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as e:
-            _err(f"Failed to import page {p}: {e}\n{traceback.format_exc()}")
+    # Wrap entire import in a FreeCAD transaction so Ctrl+Z undoes it in one step
+    fc_doc.openTransaction("Import PDF")
+    try:
+        pages = opts.pages or [1]
+        for p in pages:
+            if p < 1 or p > total_pages:
+                _warn(f"Skipping out-of-range page {p} (PDF has {total_pages} pages)")
+                continue
+            try:
+                import_pdf_page(pdf_path, page_num=p, opts=opts)
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as e:
+                _err(f"Failed to import page {p}: {e}\n{traceback.format_exc()}")
+        fc_doc.commitTransaction()
+    except Exception:
+        fc_doc.abortTransaction()
+        raise
 
     fc_doc.recompute()
 

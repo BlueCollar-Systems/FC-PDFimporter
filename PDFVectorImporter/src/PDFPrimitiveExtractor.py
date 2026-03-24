@@ -7,6 +7,7 @@ Rule 1: Parser modules must not know about domain-specific logic.
 """
 from __future__ import annotations
 import math
+import re
 from typing import List, Optional, Tuple
 
 from PDFPrimitives import (
@@ -42,7 +43,8 @@ def _norm_color(col) -> Optional[Tuple[float, float, float]]:
 def extract_page(page, page_num: int, scale: float = 1.0,
                  flip_y: bool = True) -> PageData:
     """Extract normalized primitives from a PyMuPDF page."""
-    reset_ids()
+    # NOTE: Do NOT reset_ids() here — IDs must be unique across all pages
+    # in a multi-page import. reset_ids() is called once at import start.
 
     page_h = page.rect.height
     page_w_mm = page.rect.width * MM_PER_PT * scale
@@ -110,7 +112,7 @@ def extract_page(page, page_num: int, scale: float = 1.0,
                             page_h, flip_y, scale)
                 if not current_pts:
                     current_pts.append(p0)
-                N = max(4, min(32, int(math.ceil(_dist(p0, p3) / max(0.5, 0.01)))))
+                N = max(4, min(32, int(math.ceil(_dist(p0, p3) / 0.5))))
                 for i in range(1, N + 1):
                     t = i / float(N)
                     q = _bezier_pt(p0, p1, p2, p3, t)
@@ -236,7 +238,6 @@ def _classify_generic(text: str) -> list:
     tags = []
     t = text.strip()
     tu = t.upper()
-    import re
 
     if re.search(r"\d+['']\s*[-–]?\s*\d", t) or re.search(r"\d+\s*/\s*\d+", t):
         tags.append("dimension_like")

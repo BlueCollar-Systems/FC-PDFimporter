@@ -65,7 +65,7 @@ def _classify(regions, page_data):
     for r in regions:
         if not r.bbox: continue
         # Title block: bottom of page, wide
-        if r.bbox[1] < ph * 0.15 * 0.352778 and r.bbox[3] < ph * 0.3 * 0.352778:
+        if r.bbox[1] < ph * 0.15 and r.bbox[3] < ph * 0.3:
             r.is_titleblock = True
             r.region_type = "title_block"
             r.label = "TitleBlock"

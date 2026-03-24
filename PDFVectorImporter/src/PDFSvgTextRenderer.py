@@ -73,8 +73,8 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
         return None
 
     # Generate SVG
-    svg_path = os.path.join(tempfile.gettempdir(),
-        f"bc_fc_svg_{os.getpid()}_{page_num}.svg")
+    fd, svg_path = tempfile.mkstemp(suffix=".svg", prefix=f"bc_fc_svg_{page_num}_")
+    os.close(fd)  # close fd so subprocess can write to the path
 
     try:
         kw = {}

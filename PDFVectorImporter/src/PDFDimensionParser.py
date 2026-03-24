@@ -94,7 +94,7 @@ def _parse_token(s):
     m = re.match(r'(\d+)\s+(\d+)\s*/\s*(\d+)$', s)
     if m: return float(m.group(1)) + float(m.group(2))/float(m.group(3))
     m = re.match(r'(\d+)\s*/\s*(\d+)$', s)
-    if m: return float(m.group(1))/float(m.group(2))
+    if m and float(m.group(2)) != 0: return float(m.group(1))/float(m.group(2))
     m = re.match(r'(\d+(?:\.\d+)?)$', s)
     if m: return float(m.group(1))
     return None
