@@ -183,7 +183,7 @@ def ensure_pymupdf(mod_dir: Optional[str]) -> dict:
         return {"status": "available", "installed_now": False}
     except ImportError as first_exc:
         if not mod_dir:
-            raise RuntimeError(f"PyMuPDF missing and mod_dir not provided: {first_exc}")
+            raise RuntimeError(f"PyMuPDF missing and mod_dir not provided: {first_exc}") from first_exc
 
         p = Path(mod_dir)
         if p.name.lower() == "pdfvectorimporter":
@@ -284,7 +284,7 @@ def ensure_pymupdf(mod_dir: Optional[str]) -> dict:
         raise RuntimeError(
             f"PyMuPDF unavailable after install attempts. lib_dir={lib_dir}. "
             f"first_error={first_exc}. attempts={attempts}"
-        )
+        ) from first_exc
 
 
 def count_doc_objects(doc) -> dict:

@@ -11,7 +11,7 @@ import re
 from typing import List, Optional, Tuple
 
 from PDFPrimitives import (
-    Primitive, NormalizedText, PageData, next_id, reset_ids
+    Primitive, NormalizedText, PageData, next_id
 )
 
 MM_PER_PT = 25.4 / 72.0
@@ -69,10 +69,10 @@ def extract_page(page, page_num: int, scale: float = 1.0,
         current_pts: List[Tuple[float, float]] = []
         sub_paths: List[Tuple[List[Tuple[float, float]], bool]] = []
 
-        def flush(closed: bool):
+        def flush(closed: bool, _sub_paths=sub_paths):
             nonlocal current_pts
             if len(current_pts) >= 2:
-                sub_paths.append((current_pts[:], closed))
+                _sub_paths.append((current_pts[:], closed))
             current_pts = []
 
         for item in items:

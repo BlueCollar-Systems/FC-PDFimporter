@@ -26,3 +26,9 @@ jobs:
 
       - name: Compile all Python modules
         run: python -m compileall PDFVectorImporter
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint (functional + bugbear)
+        run: ruff check --select F,B PDFVectorImporter

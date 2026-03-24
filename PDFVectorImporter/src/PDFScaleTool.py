@@ -161,7 +161,7 @@ def parse_dimension_mm(text: str) -> float:
     try:
         return float(text)
     except ValueError:
-        raise ValueError(f"Cannot parse dimension: '{text}'")
+        raise ValueError(f"Cannot parse dimension: '{text}'") from None
 
 
 # ──────────────────────────────────────────────────────────────────────

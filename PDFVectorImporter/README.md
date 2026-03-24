@@ -53,7 +53,7 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 
 | Dependency | Required | Notes |
 |---|---|---|
-| **FreeCAD** | 0.20+ | Tested through 1.0 |
+| **FreeCAD** | 0.21+ | Tested through 1.0 |
 | **PyMuPDF** | Yes | Auto-installed on first run |
 | **pdftocairo** | Optional | Required only for text-as-geometry import |
 
@@ -62,7 +62,7 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 ## Architecture
 
 ```
-_inspect_fc_v350/PDFVectorImporter/
+PDFVectorImporter/
 |-- Init.py                     # FreeCAD workbench registration
 |-- InitGui.py                  # GUI commands and menus
 |-- PDFImportHandler.py         # Top-level import orchestration
@@ -97,7 +97,7 @@ The test harness supports multiple target platforms through an adapter pattern:
 
 | Adapter | Target | Description |
 |---|---|---|
-| **FreeCAD** | FreeCAD 0.20+ | Full integration tests against live FreeCAD |
+| **FreeCAD** | FreeCAD 0.21+ | Full integration tests against live FreeCAD |
 | **SketchUp** | SketchUp | Cross-platform validation via SketchUp adapter |
 
 **Test artifacts:**

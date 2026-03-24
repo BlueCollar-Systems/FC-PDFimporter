@@ -1045,12 +1045,12 @@ def _apply_vertical_mixed_fraction_compaction(layout_items: List[dict], scale: f
         if base_fs <= 0:
             continue
 
-        def risky(test_fs: float) -> bool:
-            a0, a1, n0, n1 = _projected_text_extents(item, scale, test_fs)
+        def risky(test_fs: float, _item=item) -> bool:
+            a0, a1, n0, n1 = _projected_text_extents(_item, scale, test_fs)
             normal_tol = 0.20 * max(test_fs / max(scale, 1e-12), 1.0)
             min_clearance = 0.18 * max(test_fs / max(scale, 1e-12), 1.0)
             for other in layout_items:
-                if other is item:
+                if other is _item:
                     continue
                 oa0, oa1, on0, on1 = _projected_text_extents(other, scale)
                 if not _intervals_overlap(n0, n1, on0, on1, tol=normal_tol):
@@ -1130,7 +1130,7 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         if header != b'%PDF-':
             raise ValueError(f"Not a valid PDF file: {pdf_path}")
     except OSError as e:
-        raise ValueError(f"Cannot read PDF file: {e}")
+        raise ValueError(f"Cannot read PDF file: {e}") from e
 
     pdf_doc = fitz.open(pdf_path)
     if page_num < 1 or page_num > len(pdf_doc):
@@ -1471,10 +1471,10 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         sub_edges: List = []
         wires_edges: List[List] = []
 
-        def flush_sub(close_flag: bool):
+        def flush_sub(close_flag: bool, _wires=wires_edges):
             nonlocal sub_edges, current_pt
             if sub_edges:
-                wires_edges.append((sub_edges[:], close_flag))
+                _wires.append((sub_edges[:], close_flag))
             sub_edges = []
             current_pt = None
 
@@ -1954,7 +1954,7 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
     if hatch_drawings and opts.hatch_mode == "group":
         try:
             hatch_group = _make_group(top_group or fc_doc, "Hatching", fc_doc)
-            for pg_idx, path_group in enumerate(hatch_drawings):
+            for _pg_idx, path_group in enumerate(hatch_drawings):
                 items = path_group.get("items", [])
                 if not items:
                     continue

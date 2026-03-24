@@ -4,7 +4,7 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Version: 3.5.0](https://img.shields.io/badge/Version-3.5.0-blue.svg)
-![Platform: FreeCAD 0.20+](https://img.shields.io/badge/Platform-FreeCAD%200.20%2B-orange.svg)
+![Platform: FreeCAD 0.21+](https://img.shields.io/badge/Platform-FreeCAD%200.21%2B-orange.svg)
 
 Import vector geometry, text, and images from PDF files into FreeCAD as editable Part objects.
 
@@ -70,8 +70,8 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 
 ## Requirements
 
-- **FreeCAD** 0.20 or later
-- **Python** 3.8+
+- **FreeCAD** 0.21 or later
+- **Python** 3.10+ (adapters use PEP 604 union types)
 - **PyMuPDF** (automatically installed via Addon Manager)
 
 ## License
