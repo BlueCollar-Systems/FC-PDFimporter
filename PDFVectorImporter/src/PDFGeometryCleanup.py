@@ -40,17 +40,34 @@ def _det3(m):
            +m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]))
 
 
-def cleanup_primitives(primitives, config=None):
-    """Run cleanup on primitive list. Returns stats dict."""
+def cleanup_primitives(primitives, config=None, cleanup_level=None):
+    """Run cleanup on primitive list. Returns stats dict.
+
+    If *cleanup_level* is provided (e.g. "conservative", "balanced", "aggressive"),
+    tolerance values are resolved from ``PDFImportConfig.CLEANUP_PRESETS``.
+    """
     from PDFPrimitives import RecognitionConfig
     if config is None:
         config = RecognitionConfig()
+
+    # Resolve cleanup_level preset (Phase 2)
+    min_seg = config.min_segment_len
+    if cleanup_level:
+        try:
+            from PDFImportConfig import CLEANUP_PRESETS
+            preset = CLEANUP_PRESETS.get(cleanup_level.lower(),
+                                         CLEANUP_PRESETS.get("balanced", {}))
+            if "min_seg" in preset:
+                min_seg = preset["min_seg"]
+        except ImportError:
+            pass
+
     stats = {"merged": 0, "removed_micro": 0, "removed_dupes": 0}
     # Remove micro segments
     before = len(primitives)
     primitives[:] = [p for p in primitives
                      if not (p.type == "line" and p.points and len(p.points) == 2
                              and math.hypot(p.points[1][0]-p.points[0][0],
-                                            p.points[1][1]-p.points[0][1]) < config.min_segment_len)]
+                                            p.points[1][1]-p.points[0][1]) < min_seg)]
     stats["removed_micro"] = before - len(primitives)
     return stats

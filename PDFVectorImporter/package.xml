@@ -8,8 +8,8 @@
   <!-- AI Contributors: Claude & Claude Code (Anthropic), ChatGPT & Codex (OpenAI),
        Gemini (Google), Microsoft Copilot — collaborative AI development partners. -->
   <license file="LICENSE">MIT</license>
-  <url type="repository" branch="main">https://github.com/BlueCollarSystems/FreeCAD-PDFVectorImporter</url>
-  <url type="readme">https://github.com/BlueCollarSystems/FreeCAD-PDFVectorImporter/blob/main/README.md</url>
+  <url type="repository" branch="main">https://github.com/BlueCollar-Systems/FC-PDFimporter</url>
+  <url type="readme">https://github.com/BlueCollar-Systems/FC-PDFimporter/blob/main/README.md</url>
   <icon>resources/ImportPDFVector.svg</icon>
 
   <content>
