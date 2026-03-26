@@ -29,6 +29,7 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 | **Image Extraction** | Embedded images extracted and placed in the model |
 | **Hatch Detection** | Three modes: Import, Group, or Skip detected hatch regions |
 | **Batch Import** | Multi-file import and drag-and-drop support |
+| **SKP Bridge** | Import SketchUp `.skp` models via workbench command when backend support exists |
 | **Auto View** | Orthographic top-down view set automatically after import |
 
 ---

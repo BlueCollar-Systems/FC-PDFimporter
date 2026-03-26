@@ -174,6 +174,55 @@ class ImportViaConsoleCommand:
 
 
 # ──────────────────────────────────────────────────────────────────────
+class ImportSKPCommand:
+    """Import a SketchUp SKP file into the active FreeCAD document."""
+
+    def GetResources(self):
+        return {
+            "Pixmap": "",
+            "MenuText": "Import SKP…",
+            "ToolTip": "Import a SketchUp .skp file with FreeCAD's available SKP importer.",
+        }
+
+    def IsActive(self):
+        return QtWidgets is not None and FreeCAD is not None
+
+    def Activated(self):
+        skp, _ = QtWidgets.QFileDialog.getOpenFileName(
+            None, "Select SKP", "", "SketchUp Files (*.skp)")
+        if not skp:
+            return
+
+        try:
+            import Import
+        except ImportError as e:
+            _err(f"FreeCAD SKP importer module is unavailable: {e}")
+            if QtWidgets:
+                QtWidgets.QMessageBox.warning(
+                    None,
+                    "SKP Import Unavailable",
+                    "FreeCAD could not load an SKP importer backend.\n\n"
+                    "Install/enable an SKP-capable importer and retry.")
+            return
+
+        try:
+            if FreeCAD.ActiveDocument is None:
+                FreeCAD.newDocument("SKP_Import")
+            doc = FreeCAD.ActiveDocument
+            Import.insert(skp, doc.Name)
+            doc.recompute()
+            _msg(f"SKP import completed: {skp}")
+
+            if FreeCADGui and FreeCADGui.ActiveDocument and FreeCADGui.ActiveDocument.ActiveView:
+                FreeCADGui.ActiveDocument.ActiveView.fitAll()
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, ImportError) as e:
+            _err(f"SKP import failed: {e}")
+            if QtWidgets:
+                QtWidgets.QMessageBox.critical(
+                    None, "SKP Import Failed", str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────
 class BatchImportCommand:
     """Import all PDFs in a folder."""
 

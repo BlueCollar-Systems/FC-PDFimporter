@@ -21,16 +21,17 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 
-def load_json(path: str | None) -> dict:
+def load_json(path: Optional[str]) -> dict:
     if not path:
         return {}
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def normalize_path(value: str | None, base_dir: str | None = None) -> str | None:
+def normalize_path(value: Optional[str], base_dir: Optional[str] = None) -> Optional[str]:
     if value is None:
         return None
     raw = os.path.expandvars(str(value))
@@ -40,7 +41,7 @@ def normalize_path(value: str | None, base_dir: str | None = None) -> str | None
     return str(p.resolve())
 
 
-def build_payload(args: argparse.Namespace, cfg: dict, result_path: str, config_dir: str | None) -> dict:
+def build_payload(args: argparse.Namespace, cfg: dict, result_path: str, config_dir: Optional[str]) -> dict:
     freecad_cfg = cfg.get("freecad", {})
     return {
         "adapter": "freecad",
@@ -63,7 +64,7 @@ def build_payload(args: argparse.Namespace, cfg: dict, result_path: str, config_
 
 
 def launch_freecad_console(freecadcmd_exe: str, harness: str, payload_path: str,
-                           timeout: int = 300) -> tuple[int, str, str]:
+                           timeout: int = 300) -> Tuple[int, str, str]:
     env = os.environ.copy()
     env["BC_PDF_QA_PAYLOAD"] = payload_path
 
