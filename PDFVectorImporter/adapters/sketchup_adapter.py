@@ -28,17 +28,16 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
 
-def load_json(path: Optional[str]) -> dict:
+def load_json(path: str | None) -> dict:
     if not path:
         return {}
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def normalize_path(value: Optional[str], base_dir: Optional[str] = None) -> Optional[str]:
+def normalize_path(value: str | None, base_dir: str | None = None) -> str | None:
     if value is None:
         return None
     raw = os.path.expandvars(str(value))
@@ -48,7 +47,7 @@ def normalize_path(value: Optional[str], base_dir: Optional[str] = None) -> Opti
     return str(p.resolve())
 
 
-def build_payload(args: argparse.Namespace, cfg: dict, result_path: str, config_dir: Optional[str]) -> dict:
+def build_payload(args: argparse.Namespace, cfg: dict, result_path: str, config_dir: str | None) -> dict:
     sketchup_cfg = cfg.get("sketchup", {})
     return {
         "adapter": "sketchup",
@@ -107,7 +106,7 @@ end
     return bootstrap_path
 
 
-def cleanup_bootstrap_plugin(path: Optional[str]) -> None:
+def cleanup_bootstrap_plugin(path: str | None) -> None:
     if not path:
         return
     try:
@@ -117,8 +116,8 @@ def cleanup_bootstrap_plugin(path: Optional[str]) -> None:
         pass
 
 
-def try_launch_sketchup(sketchup_exe: Optional[str], ruby_harness: Optional[str], payload_path: str,
-                        config_dir: Optional[str], plugins_dir: Optional[str]) -> Tuple[bool, str, Optional[str]]:
+def try_launch_sketchup(sketchup_exe: str | None, ruby_harness: str | None, payload_path: str,
+                        config_dir: str | None, plugins_dir: str | None) -> tuple[bool, str, str | None]:
     """
     Best-effort launcher.
 
@@ -165,7 +164,7 @@ def try_launch_sketchup(sketchup_exe: Optional[str], ruby_harness: Optional[str]
         return False, f"Launch failed: {exc}", None
 
 
-def wait_for_result(result_path: str, timeout_seconds: int) -> Optional[dict]:
+def wait_for_result(result_path: str, timeout_seconds: int) -> dict | None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if os.path.isfile(result_path):

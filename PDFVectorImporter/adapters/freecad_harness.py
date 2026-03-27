@@ -18,7 +18,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Optional
 
 
 def resolve_path(value: Optional[str], base_dir: Optional[str] = None) -> Optional[str]:
@@ -47,7 +47,7 @@ def parse_pages(spec: Optional[str], pdf_path: str):
         except (ImportError, OSError, RuntimeError):
             return [1]
 
-    pages: Set[int] = set()
+    pages: set[int] = set()
     for part in [p.strip() for p in s.replace(";", ",").split(",") if p.strip()]:
         if "-" in part:
             a, b = [x.strip() for x in part.split("-", 1)]
@@ -120,8 +120,8 @@ def _looks_like_python(path_or_name: str) -> bool:
     return name.startswith("python") or name in ("py", "py.exe")
 
 
-def _candidate_python_interpreters() -> List[str]:
-    candidates: List[str] = []
+def _candidate_python_interpreters() -> list[str]:
+    candidates: list[str] = []
 
     env_py = os.environ.get("BC_PDF_QA_PYTHON", "").strip()
     if env_py:
@@ -146,7 +146,7 @@ def _candidate_python_interpreters() -> List[str]:
         if found:
             candidates.append(found)
 
-    out: List[str] = []
+    out: list[str] = []
     seen = set()
     for c in candidates:
         if not c:
@@ -159,7 +159,7 @@ def _candidate_python_interpreters() -> List[str]:
     return out
 
 
-def _run_cmd(cmd: List[str], timeout_s: int = 300) -> dict:
+def _run_cmd(cmd: list[str], timeout_s: int = 300) -> dict:
     kwargs = {
         "capture_output": True,
         "text": True,

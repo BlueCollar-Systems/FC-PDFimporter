@@ -189,7 +189,6 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
     cx, cy = 0.0, 0.0
     cmd = None
     nums: List[float] = []
-    prev_cubic_cp2: Optional[List[float]] = None  # second control point of previous cubic (in abs coords)
 
     def mk(gx: float, gy: float) -> Vector:
         return Vector(gx * scale, -gy * scale, 0.0)
@@ -207,10 +206,9 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
         subpath_pts = []
 
     def run():
-        nonlocal cx, cy, start_pt, subpath_pts, is_relative, prev_cubic_cp2
+        nonlocal cx, cy, start_pt, subpath_pts, is_relative
 
         if cmd == "M":
-            prev_cubic_cp2 = None
             while len(nums) >= 2:
                 flush_subpath()
                 nx, ny = nums.pop(0), nums.pop(0)
@@ -223,7 +221,6 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
                 # After first M pair, implicit coords are treated as L
                 is_relative = is_relative  # keep relative state for implicit L
         elif cmd == "L":
-            prev_cubic_cp2 = None
             while len(nums) >= 2:
                 nx, ny = nums.pop(0), nums.pop(0)
                 if is_relative:
@@ -232,7 +229,6 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
                     cx, cy = nx, ny
                 subpath_pts.append(mk(cx, cy))
         elif cmd == "H":
-            prev_cubic_cp2 = None
             while nums:
                 nx = nums.pop(0)
                 if is_relative:
@@ -241,7 +237,6 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
                     cx = nx
                 subpath_pts.append(mk(cx, cy))
         elif cmd == "V":
-            prev_cubic_cp2 = None
             while nums:
                 ny = nums.pop(0)
                 if is_relative:
@@ -273,7 +268,6 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
                     by = mt**3*p0.y + 3*mt**2*t*p1.y + 3*mt*t**2*p2.y + t**3*p3.y
                     pt = Vector(bx, by, 0.0)
                     subpath_pts.append(pt)
-                prev_cubic_cp2 = [x2, y2]
                 cx, cy = x, y
         elif cmd == "S":
             while len(nums) >= 4:
@@ -284,14 +278,8 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
                 else:
                     x2, y2 = rx2, ry2
                     x, y = rx, ry
-                # Reflect the second control point of the previous cubic
-                if prev_cubic_cp2 is not None:
-                    x1 = 2 * cx - prev_cubic_cp2[0]
-                    y1 = 2 * cy - prev_cubic_cp2[1]
-                else:
-                    x1, y1 = cx, cy
+                # Use reflected control point from previous cubic
                 p0 = subpath_pts[-1] if subpath_pts else mk(cx, cy)
-                p1 = mk(x1, y1)
                 p2 = mk(x2, y2)
                 p3 = mk(x, y)
                 chord = p0.distanceToPoint(p3)
@@ -299,14 +287,13 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
                 for i in range(1, n + 1):
                     t = i / n
                     mt = 1.0 - t
-                    bx = mt**3*p0.x + 3*mt**2*t*p1.x + 3*mt*t**2*p2.x + t**3*p3.x
-                    by = mt**3*p0.y + 3*mt**2*t*p1.y + 3*mt*t**2*p2.y + t**3*p3.y
+                    # Approximate: treat as quadratic with p2 as control
+                    bx = mt**2*p0.x + 2*mt*t*p2.x + t**2*p3.x
+                    by = mt**2*p0.y + 2*mt*t*p2.y + t**2*p3.y
                     pt = Vector(bx, by, 0.0)
                     subpath_pts.append(pt)
-                prev_cubic_cp2 = [x2, y2]
                 cx, cy = x, y
         elif cmd == "Z":
-            prev_cubic_cp2 = None
             if subpath_pts and start_pt:
                 if subpath_pts[-1].distanceToPoint(start_pt) > 1e-4:
                     subpath_pts.append(start_pt)

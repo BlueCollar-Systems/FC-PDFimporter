@@ -193,33 +193,79 @@ class ImportSKPCommand:
         if not skp:
             return
 
+        if FreeCAD.ActiveDocument is None:
+            FreeCAD.newDocument("SKP_Import")
+        doc = FreeCAD.ActiveDocument
+
+        # ── Backend 1: FreeCAD native Import module ──────────────────────
+        backend_available = False
         try:
             import Import
-        except ImportError as e:
-            _err(f"FreeCAD SKP importer module is unavailable: {e}")
+            backend_available = True
+        except ImportError:
+            pass
+
+        if not backend_available:
+            _err("FreeCAD SKP importer module is unavailable (Import module missing).")
             if QtWidgets:
                 QtWidgets.QMessageBox.warning(
                     None,
-                    "SKP Import Unavailable",
-                    "FreeCAD could not load an SKP importer backend.\n\n"
-                    "Install/enable an SKP-capable importer and retry.")
+                    "SKP Import — Backend Not Found",
+                    "FreeCAD could not find an SKP importer backend.\n\n"
+                    "Possible solutions:\n"
+                    "  1. Install the SketchUp Importer plugin from the FreeCAD\n"
+                    "     addon manager (Tools → Addon Manager → search 'SKP')\n"
+                    "  2. Export your file from SketchUp as COLLADA (.dae) or\n"
+                    "     IFC (.ifc) — both are supported natively by FreeCAD\n"
+                    "  3. Use SketchUp's free viewer to open the file, then\n"
+                    "     re-export to a compatible format\n\n"
+                    "Note: SKP is a proprietary format — native support requires\n"
+                    "an optional FreeCAD module that may not be installed.")
             return
 
+        # ── Backend 2: Try Import.insert (native path) ───────────────────
         try:
-            if FreeCAD.ActiveDocument is None:
-                FreeCAD.newDocument("SKP_Import")
-            doc = FreeCAD.ActiveDocument
             Import.insert(skp, doc.Name)
             doc.recompute()
             _msg(f"SKP import completed: {skp}")
-
             if FreeCADGui and FreeCADGui.ActiveDocument and FreeCADGui.ActiveDocument.ActiveView:
                 FreeCADGui.ActiveDocument.ActiveView.fitAll()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, ImportError) as e:
-            _err(f"SKP import failed: {e}")
-            if QtWidgets:
-                QtWidgets.QMessageBox.critical(
-                    None, "SKP Import Failed", str(e))
+            return
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as e:
+            raw_err = str(e)
+            _err(f"SKP import failed via native backend: {raw_err}")
+
+        # ── Backend 3: Try Mesh module as fallback ────────────────────────
+        mesh_ok = False
+        try:
+            import Mesh
+            Mesh.insert(skp, doc.Name)
+            doc.recompute()
+            _msg(f"SKP imported as mesh (fallback): {skp}")
+            if FreeCADGui and FreeCADGui.ActiveDocument and FreeCADGui.ActiveDocument.ActiveView:
+                FreeCADGui.ActiveDocument.ActiveView.fitAll()
+            mesh_ok = True
+        except Exception:
+            pass
+
+        if mesh_ok:
+            return
+
+        # ── All backends failed — show actionable guidance ────────────────
+        if QtWidgets:
+            QtWidgets.QMessageBox.warning(
+                None,
+                "SKP Import — Format Not Supported",
+                "This version of FreeCAD could not open the SKP file.\n\n"
+                "The SKP format is proprietary to Trimble/SketchUp and requires\n"
+                "a special importer that may not be installed or may not support\n"
+                "this SKP version.\n\n"
+                "Best alternatives:\n"
+                "  1. Open the file in SketchUp (free web version at app.sketchup.com)\n"
+                "     and export as COLLADA (.dae) — FreeCAD opens these natively\n"
+                "  2. Export as IFC (.ifc) from SketchUp if you need BIM data\n"
+                "  3. Export as OBJ (.obj) for mesh-only geometry\n\n"
+                "Then use FreeCAD's File → Import to open the converted file.")
 
 
 # ──────────────────────────────────────────────────────────────────────

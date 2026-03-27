@@ -253,6 +253,8 @@ class ImportOptions:
     heavy_page_threshold: int = 3000        # above this: larger batches, throttled
     #   progress updates, deferred arc fitting on polyline runs
     #   0 = never auto-engage heavy mode
+    # Cleanup level — maps to PDFImportConfig.CLEANUP_PRESETS tolerance values
+    cleanup_level: str = "balanced"         # "conservative" | "balanced" | "aggressive"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -340,8 +342,6 @@ def _arc_from_cubic(p0, p1, p2, p3, opts: ImportOptions):
     try:
         center, r, rms = _circle_fit(pts)
     except ValueError:
-        return None
-    if r < 0.1:
         return None
     if rms > opts.arc_fit_tol_mm:
         return None
@@ -2044,7 +2044,6 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                     os.makedirs(tmpdir, exist_ok=True)
                     img_path = os.path.join(tmpdir, f"img_p{page_num}_x{xref}.png")
                     pix.save(img_path)
-                    _register_temp_cleanup(img_path)
                 except (RuntimeError, OSError, ValueError, TypeError) as e:
                     _warn(f"Image xref {xref} extract failed: {e}")
                     continue

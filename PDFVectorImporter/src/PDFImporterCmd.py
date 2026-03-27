@@ -29,14 +29,17 @@ import FreeCAD
 class ImportPDFDialog(QtWidgets.QDialog):
     """Preset-based options dialog for the PDF vector importer."""
 
+    # cleanup_level maps to PDFImportConfig.CLEANUP_PRESETS tolerance values.
+    # It must stay consistent with join_tol: fast/loose presets → conservative,
+    # standard presets → balanced, high-fidelity → aggressive.
     PRESETS = {
-        "Fast Preview": dict(curve_step=2.0, join_tol=0.5, detect_arcs=False, map_dashes=False, make_faces=False, text="No text", hatch_mode="skip", import_mode="auto"),
-        "General Vector": dict(curve_step=1.0, join_tol=0.2, detect_arcs=False, map_dashes=False, make_faces=True, text="Labels", hatch_mode="import", import_mode="auto"),
-        "Technical Drawing": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Labels", hatch_mode="group", import_mode="auto"),
-        "Shop Drawing": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group", import_mode="auto"),
-        "Raster + Vectors": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Labels", hatch_mode="skip", import_mode="hybrid", raster_dpi=200),
-        "Raster Only": dict(curve_step=1.0, join_tol=0.5, detect_arcs=False, map_dashes=False, make_faces=False, text="No text", hatch_mode="skip", import_mode="raster", raster_dpi=300),
-        "Max Fidelity": dict(curve_step=0.2, join_tol=0.05, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="import", import_mode="auto"),
+        "Fast Preview":     dict(curve_step=2.0, join_tol=0.5,  detect_arcs=False, map_dashes=False, make_faces=False, text="No text",  hatch_mode="skip",   import_mode="auto",   cleanup_level="conservative"),
+        "General Vector":   dict(curve_step=1.0, join_tol=0.2,  detect_arcs=False, map_dashes=False, make_faces=True,  text="Labels",   hatch_mode="import", import_mode="auto",   cleanup_level="balanced"),
+        "Technical Drawing":dict(curve_step=0.5, join_tol=0.1,  detect_arcs=True,  map_dashes=True,  make_faces=True,  text="Labels",   hatch_mode="group",  import_mode="auto",   cleanup_level="balanced"),
+        "Shop Drawing":     dict(curve_step=0.5, join_tol=0.1,  detect_arcs=True,  map_dashes=True,  make_faces=True,  text="Geometry", hatch_mode="group",  import_mode="auto",   cleanup_level="balanced"),
+        "Raster + Vectors": dict(curve_step=0.5, join_tol=0.1,  detect_arcs=True,  map_dashes=True,  make_faces=True,  text="Labels",   hatch_mode="skip",   import_mode="hybrid", cleanup_level="balanced",      raster_dpi=200),
+        "Raster Only":      dict(curve_step=1.0, join_tol=0.5,  detect_arcs=False, map_dashes=False, make_faces=False, text="No text",  hatch_mode="skip",   import_mode="raster", cleanup_level="conservative",  raster_dpi=300),
+        "Max Fidelity":     dict(curve_step=0.2, join_tol=0.05, detect_arcs=True,  map_dashes=True,  make_faces=True,  text="Geometry", hatch_mode="import", import_mode="auto",   cleanup_level="aggressive"),
     }
 
     def __init__(self, parent=None):
@@ -346,6 +349,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
             import_mode=import_mode,
             create_top_group=True,
             verbose=True,
+            cleanup_level=preset.get("cleanup_level", "balanced"),
         )
 
 
