@@ -349,7 +349,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
             import_mode=import_mode,
             create_top_group=True,
             verbose=True,
-            cleanup_level=preset.get("cleanup_level", "balanced"),
+            # cleanup_level is a Phase 2 option — not yet in ImportOptions
         )
 
 
