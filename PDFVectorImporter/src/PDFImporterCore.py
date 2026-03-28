@@ -49,6 +49,26 @@ MM_PER_PT = 25.4 / 72.0       # 1 PDF point = 0.352778 mm
 ZERO_TOL  = 1e-9              # near-zero length tolerance
 CLOSE_TOL = 1e-6              # endpoint-coincidence tolerance
 
+# Auto-mode heuristics for pages that contain mostly vectorized glyph fills.
+# These PDFs often look "vector" to PyMuPDF but are effectively not useful as
+# editable CAD geometry (thousands of tiny filled path groups).
+AUTO_GLYPH_DRAWING_THRESHOLD = 1500
+AUTO_GLYPH_FILL_RATIO = 0.75          # was 0.85 — loosened to catch more flood types
+AUTO_GLYPH_TINY_RECT_RATIO = 0.45
+AUTO_GLYPH_TEXT_BLOCK_THRESHOLD = 50  # was 200 — text-sparse maps still trigger
+AUTO_GLYPH_WORD_THRESHOLD = 400       # was 800 — lower text requirement
+AUTO_GLYPH_STROKE_SPARSE_RATIO = 0.05
+AUTO_GLYPH_TINY_RECT_AREA_PT2 = 36.0
+
+# Fill-art flood detection — catches map PDFs, illustrated layouts, decorative
+# art where most drawing groups are filled shapes rather than engineering strokes.
+# Unlike glyph-flood (text-as-vectors), these pages have organic filled areas
+# (tree canopies, planting beds, terrain fills) with almost no stroked lines.
+AUTO_FILL_DRAWING_THRESHOLD = 400  # minimum groups to trigger fill-art check
+AUTO_FILL_HEAVY_RATIO = 0.60       # fill-only ratio — 60%+ fills signals art/map
+AUTO_FILL_STROKE_MAX = 0.22        # stroke ratio ceiling — if too many strokes
+#                                    it's a hybrid worth processing as vectors
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Logging
@@ -108,8 +128,97 @@ def _rect_coords(obj) -> Tuple[float, float, float, float]:
         x0, y0 = float(obj.x0), float(obj.y0)
         return x0, y0, float(obj.x1) - x0, float(obj.y1) - y0
     if isinstance(obj, (tuple, list)) and len(obj) >= 4:
-        return float(obj[0]), float(obj[1]), float(obj[2]), float(obj[3])
+        x0, y0, x1, y1 = float(obj[0]), float(obj[1]), float(obj[2]), float(obj[3])
+        return x0, y0, x1 - x0, y1 - y0
     return 0.0, 0.0, 0.0, 0.0
+
+
+def _rect_area(obj) -> Optional[float]:
+    """Return absolute rectangle area in PDF point units² or None."""
+    try:
+        _x, _y, w, h = _rect_coords(obj)
+        return abs(float(w) * float(h))
+    except (TypeError, ValueError):
+        return None
+
+
+def _vector_group_stats(drawings: List[dict]) -> Dict[str, float]:
+    """Profile coarse vector composition for auto-mode heuristics."""
+    total = len(drawings)
+    if total <= 0:
+        return {
+            "fill_only_ratio": 0.0,
+            "stroke_ratio": 0.0,
+            "tiny_rect_ratio": 0.0,
+            "fill_only_count": 0.0,
+            "stroke_count": 0.0,
+            "tiny_rect_count": 0.0,
+        }
+
+    fill_only = 0
+    stroke_count = 0
+    tiny_rect_count = 0
+
+    for grp in drawings:
+        fill = grp.get("fill")
+        stroke = grp.get("color") or grp.get("stroke")
+        if fill is not None and stroke is None:
+            fill_only += 1
+        if stroke is not None:
+            stroke_count += 1
+        area = _rect_area(grp.get("rect"))
+        if area is not None and area <= AUTO_GLYPH_TINY_RECT_AREA_PT2:
+            tiny_rect_count += 1
+
+    denom = float(total)
+    return {
+        "fill_only_ratio": fill_only / denom,
+        "stroke_ratio": stroke_count / denom,
+        "tiny_rect_ratio": tiny_rect_count / denom,
+        "fill_only_count": float(fill_only),
+        "stroke_count": float(stroke_count),
+        "tiny_rect_count": float(tiny_rect_count),
+    }
+
+
+def _looks_like_vector_glyph_flood(n_drawings: int,
+                                   n_text_blocks: int,
+                                   n_words: int,
+                                   stats: Dict[str, float]) -> bool:
+    """Heuristic for pages where text/vector art overwhelms usable CAD lines.
+
+    Targets PDFs where text characters are stored as filled vector paths
+    (each glyph = one filled path group), producing thousands of objects
+    that are geometrically useless for CAD but look like line work to PyMuPDF.
+    """
+    if n_drawings < AUTO_GLYPH_DRAWING_THRESHOLD:
+        return False
+    text_dense = (n_text_blocks >= AUTO_GLYPH_TEXT_BLOCK_THRESHOLD
+                  or n_words >= AUTO_GLYPH_WORD_THRESHOLD)
+    if not text_dense:
+        return False
+    return (stats.get("fill_only_ratio", 0.0) >= AUTO_GLYPH_FILL_RATIO
+            and stats.get("tiny_rect_ratio", 0.0) >= AUTO_GLYPH_TINY_RECT_RATIO)
+
+
+def _looks_like_fill_art_flood(n_drawings: int,
+                               stats: Dict[str, float]) -> bool:
+    """Detect map / illustrated-art PDFs dominated by filled decorative shapes.
+
+    These pages differ from glyph floods: they are not text-as-vectors but
+    rather artistic fills — garden beds, terrain contours, tree canopies,
+    landscape features — where each shape is a complex filled path.  Importing
+    as vectors produces an unusable tangle of faces; raster is far better.
+
+    Signature: high fill-only ratio, very low stroke ratio, many groups.
+    This check is intentionally independent of text density so it fires even
+    on map pages with few text labels (e.g. a garden plan with only plant names).
+    """
+    if n_drawings < AUTO_FILL_DRAWING_THRESHOLD:
+        return False
+    fill_ratio = stats.get("fill_only_ratio", 0.0)
+    stroke_ratio = stats.get("stroke_ratio", 0.0)
+    return fill_ratio >= AUTO_FILL_HEAVY_RATIO and stroke_ratio <= AUTO_FILL_STROKE_MAX
 
 
 def _as_float(v) -> Optional[float]:
@@ -232,8 +341,9 @@ class ImportOptions:
     ignore_images: bool = False
     raster_fallback: bool = True             # render page as image if no vectors
     raster_dpi: int = 200                    # DPI for raster fallback rendering
+    raster_dpi_user_set: bool = False        # True when user explicitly chose the DPI
     # Import mode: "auto" | "vectors" | "raster" | "hybrid"
-    #   auto    — detect image-heavy PDFs and auto-select hybrid
+    #   auto    — detect scanned/image-heavy and vector-glyph-flood pages
     #   vectors — vector geometry only (original behavior)
     #   raster  — render full page as image, skip vectors
     #   hybrid  — raster background + vector geometry on top
@@ -253,8 +363,6 @@ class ImportOptions:
     heavy_page_threshold: int = 3000        # above this: larger batches, throttled
     #   progress updates, deferred arc fitting on polyline runs
     #   0 = never auto-engage heavy mode
-    # Cleanup level — maps to PDFImportConfig.CLEANUP_PRESETS tolerance values
-    cleanup_level: str = "balanced"         # "conservative" | "balanced" | "aggressive"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -477,8 +585,9 @@ def _ensure_doc():
     doc = FreeCAD.ActiveDocument
     if doc is None:
         doc = FreeCAD.newDocument("PDF_Import")
-    # Clean up temp files from any previous import
-    cleanup_temp_files()
+    # Note: temp file cleanup is deferred to explicit calls, not run
+    # automatically here, to avoid deleting images still referenced by
+    # Image::ImagePlane objects from the previous import.
     return doc
 
 
@@ -761,7 +870,7 @@ def _reconstruct_line_text(spans: list) -> str:
         # e.g. ('1516', size=10) → "15/16"
         # e.g. ('18', size=10) → "1/8"
         # e.g. ('12', size=10) → "1/2"
-        if _is_smaller_font(span, main_size) and text.isdigit() and len(text) >= 2:
+        if _is_smaller_font(span, main_size) and text.isdigit() and len(text) >= 3:
             frac = _try_split_fraction(text)
             if frac:
                 _append_frac(frac[0] + "/" + frac[1])
@@ -1082,9 +1191,26 @@ def _import_page_as_raster(pdf_doc, page, page_num: int, page_h: float,
                            parent, fc_doc):
     """Render a PDF page as a raster image and place it as an ImagePlane.
 
-    Used for scanned PDFs or pages with no usable vector content.
+    Used for scanned PDFs, map/art PDFs, or pages with no usable vector content.
+    DPI is auto-scaled to page physical size so small pages stay crisp and
+    very large pages don't exhaust memory.
     """
     dpi = opts.raster_dpi or 200
+
+    # Adaptive DPI: scale with page physical size so the image is always
+    # readable without wasting memory on large sheets.
+    #   A4 / Letter   (≤ 700 cm²)  → 200 DPI (default)
+    #   A3 / Tabloid  (700–2000 cm²) → 300 DPI (maps need more detail)
+    #   A2 and larger (> 2000 cm²) → 150 DPI (save memory, still readable)
+    if not opts.raster_dpi_user_set:   # only adjust when user hasn't explicitly set a value
+        w_cm = page.rect.width  * MM_PER_PT / 10.0
+        h_cm = page.rect.height * MM_PER_PT / 10.0
+        area_cm2 = w_cm * h_cm
+        if area_cm2 > 2000:
+            dpi = 150
+        elif area_cm2 > 700:
+            dpi = 300
+
     zoom = dpi / 72.0
     mat = fitz.Matrix(zoom, zoom)
     pix = page.get_pixmap(matrix=mat)
@@ -1135,6 +1261,11 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         raise ValueError(f"Cannot read PDF file: {e}") from e
 
     pdf_doc = fitz.open(pdf_path)
+    if pdf_doc.is_encrypted:
+        pdf_doc.close()
+        raise ValueError(
+            "This PDF is encrypted and cannot be imported. "
+            "Please remove the encryption (e.g., print to a new PDF) and try again.")
     if page_num < 1 or page_num > len(pdf_doc):
         raise ValueError(f"Page {page_num} out of range 1..{len(pdf_doc)}")
 
@@ -1243,22 +1374,90 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         # Auto-detect: profile the page content to choose best mode
         _progress_update(2, "Analyzing page content...")
         tdict = page.get_text("dict")
-        n_text = sum(1 for b in tdict.get("blocks", []) if b.get("type") == 0)
-        if n_drawings < 5 and n_text < 3:
+        n_text_blocks = sum(1 for b in tdict.get("blocks", []) if b.get("type") == 0)
+
+        # Build lightweight vector density metrics once so multiple auto rules
+        # can reuse the same profile without rescanning the page.
+        vg_stats = _vector_group_stats(drawings) if n_drawings > 0 else {}
+
+        # Word extraction is only needed for heavy vector pages where we need
+        # to distinguish CAD drawings from text-outline floods.
+        n_words = 0
+        if n_drawings >= AUTO_GLYPH_DRAWING_THRESHOLD:
+            try:
+                n_words = len(page.get_text("words"))
+            except (RuntimeError, ValueError, TypeError, OSError):
+                n_words = 0
+
+        glyph_flood = _looks_like_vector_glyph_flood(
+            n_drawings, n_text_blocks, n_words, vg_stats)
+        fill_art_flood = _looks_like_fill_art_flood(n_drawings, vg_stats)
+
+        _flood_reason = ""  # human-readable explanation for the log
+
+        if n_drawings < 5 and n_text_blocks < 3:
             # Scanned / pure raster page — no usable vector content
             effective_mode = "raster"
+            _flood_reason = "scanned/raster page (no usable vector content)"
+
+        elif glyph_flood:
+            # Vectorized text/map-art flood: huge counts of tiny filled groups.
+            # Preserve only a raster appearance by default; if substantial
+            # stroked vectors exist, keep a hybrid overlay.
+            if vg_stats.get("stroke_ratio", 0.0) <= AUTO_GLYPH_STROKE_SPARSE_RATIO:
+                effective_mode = "raster"
+            else:
+                effective_mode = "hybrid"
+            _flood_reason = (
+                f"vector glyph flood — "
+                f"{n_drawings} groups, "
+                f"fill-only={vg_stats.get('fill_only_ratio', 0.0):.0%}, "
+                f"tiny-rect={vg_stats.get('tiny_rect_ratio', 0.0):.0%}, "
+                f"text_blocks={n_text_blocks}"
+            )
+
+        elif fill_art_flood:
+            # Map / illustrated-art flood: dominated by filled decorative shapes
+            # (garden beds, terrain fills, tree canopies, etc.) with few strokes.
+            # Importing as vectors creates unusable geometry — use raster instead.
+            # If a meaningful stroke layer exists, hybrid preserves those lines.
+            if vg_stats.get("stroke_ratio", 0.0) > AUTO_GLYPH_STROKE_SPARSE_RATIO:
+                effective_mode = "hybrid"
+            else:
+                effective_mode = "raster"
+            _flood_reason = (
+                f"fill-art flood — "
+                f"{n_drawings} groups, "
+                f"fill-only={vg_stats.get('fill_only_ratio', 0.0):.0%}, "
+                f"strokes={vg_stats.get('stroke_ratio', 0.0):.0%} "
+                f"(map/decorative PDF — vectors would be unusable geometry)"
+            )
+
         elif n_drawings > 3000 and n_images > 20:
             # GIS / map PDF — thousands of contour vectors on top of tiled
             # raster imagery (USGS topo maps, aerial surveys, etc.).
             # Importing vectors produces unusable results; render as raster.
             effective_mode = "raster"
+            _flood_reason = (
+                f"GIS/topo map — {n_drawings} vector groups over "
+                f"{n_images} embedded images"
+            )
+
         elif n_images > 0 and n_drawings > 0:
             # Has both images and vectors — hybrid gives best result
             effective_mode = "hybrid"
+
         else:
             effective_mode = "vectors"
+
         if opts.verbose:
-            _msg(f"Page {page_num}: auto-detected mode = {effective_mode}")
+            if _flood_reason:
+                _msg(
+                    f"Page {page_num}: smart mode override — {_flood_reason}"
+                )
+            _msg(f"Page {page_num}: auto-detected mode = {effective_mode}"
+                 + (" (use Import Mode = Vectors to override)"
+                    if effective_mode == "raster" and _flood_reason else ""))
 
     if _progress_check_cancel():
         if progress:

@@ -40,7 +40,7 @@ def parse(text: str) -> ParsedDimension:
     if m:
         ft = float(m.group(1))
         inc = float(m.group(2)) if m.group(2) else 0
-        if m.group(3) and m.group(4):
+        if m.group(3) and m.group(4) and int(m.group(4)) != 0:
             inc += float(m.group(3)) / float(m.group(4))
         result.kind, result.value = "linear", (ft * 12 + inc) * MM_PER_INCH
         result.units, result.confidence = "mm", 0.95
@@ -92,9 +92,9 @@ def _parse_token(s):
     if not s: return None
     s = s.strip().rstrip('"\'')
     m = re.match(r'(\d+)\s+(\d+)\s*/\s*(\d+)$', s)
-    if m: return float(m.group(1)) + float(m.group(2))/float(m.group(3))
+    if m and int(m.group(3)) != 0: return float(m.group(1)) + float(m.group(2))/float(m.group(3))
     m = re.match(r'(\d+)\s*/\s*(\d+)$', s)
-    if m and float(m.group(2)) != 0: return float(m.group(1))/float(m.group(2))
+    if m and int(m.group(2)) != 0: return float(m.group(1))/float(m.group(2))
     m = re.match(r'(\d+(?:\.\d+)?)$', s)
     if m: return float(m.group(1))
     return None
@@ -102,9 +102,9 @@ def _parse_token(s):
 
 def _parse_imperial(s):
     m = re.match(r'\s*(\d+)\s+(\d+)\s*/\s*(\d+)\s*["\u2033]?', s)
-    if m: return float(m.group(1)) + float(m.group(2))/float(m.group(3))
+    if m and int(m.group(3)) != 0: return float(m.group(1)) + float(m.group(2))/float(m.group(3))
     m = re.match(r'\s*(\d+)\s*/\s*(\d+)\s*["\u2033]?\s*$', s)
-    if m: return float(m.group(1))/float(m.group(2))
+    if m and int(m.group(2)) != 0: return float(m.group(1))/float(m.group(2))
     m = re.match(r'\s*(\d+(?:\.\d+)?)\s*["\u2033]', s)
     if m: return float(m.group(1))
     return None

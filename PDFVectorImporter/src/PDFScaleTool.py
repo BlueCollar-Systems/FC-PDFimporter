@@ -490,11 +490,14 @@ def apply_scale(measured_mm: float, real_mm: float, target_group_name=None, orig
     FreeCAD.Console.PrintMessage(
         f"Scaling {len(objects)} objects by {factor:.6f}...\n")
 
-    
+    # Wrap in undo transaction so the user can Ctrl+Z to undo the scale
+    doc.openTransaction("Scale by Reference")
+
     if origin is None:
         origin = Vector(0, 0, 0)
     _scale_objects(objects, factor, origin)
     doc.recompute()
+    doc.commitTransaction()
 
     # Fit view to new extents
     try:

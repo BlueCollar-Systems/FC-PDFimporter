@@ -70,20 +70,18 @@ class PDFVectorImporterWorkbench(FreeCADGui.Workbench):
             from PDFTools import (
                 CheckEnvironmentCommand,
                 ImportViaConsoleCommand,
-                ImportSKPCommand,
                 BatchImportCommand,
                 InstallPyMuPDFCommand,
             )
             FreeCADGui.addCommand("PDF_CheckEnv", CheckEnvironmentCommand())
             FreeCADGui.addCommand("PDF_ImportViaConsole", ImportViaConsoleCommand())
-            FreeCADGui.addCommand("PDF_ImportSKP", ImportSKPCommand())
             FreeCADGui.addCommand("PDF_BatchImport", BatchImportCommand())
             FreeCADGui.addCommand("PDF_InstallPyMuPDF", InstallPyMuPDFCommand())
         except (ImportError, AttributeError, RuntimeError, ValueError, SyntaxError) as e:
             FreeCAD.Console.PrintError("PDF Utility cmds: " + str(e) + "\n")
 
         # Toolbars & menus
-        import_cmds = ["ImportPDFVector", "PDF_ImportSKP"]
+        import_cmds = ["ImportPDFVector"]
         scale_cmds  = ["PDF_ScaleByReference", "PDF_QuickScale"]
         try:
             self.appendToolbar("PDF Import", import_cmds + scale_cmds)
