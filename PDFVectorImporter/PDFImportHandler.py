@@ -24,10 +24,21 @@ for root in (FreeCAD.getUserAppDataDir(), FreeCAD.getResourceDir()):
 for _base in _candidates:
     _src = os.path.join(_base, "src")
     _lib = os.path.join(_src, "lib")
-    for _p in (_base, _src):
-        if _p not in sys.path:
-            sys.path.append(_p)
-    if os.path.isdir(_lib) and _lib not in sys.path:
+    for _p in (os.path.dirname(_base), _base, _src):
+        if not _p:
+            continue
+        try:
+            while _p in sys.path:
+                sys.path.remove(_p)
+        except (AttributeError, ValueError):
+            pass
+        sys.path.insert(0, _p)
+    if os.path.isdir(_lib):
+        try:
+            while _lib in sys.path:
+                sys.path.remove(_lib)
+        except (AttributeError, ValueError):
+            pass
         sys.path.insert(0, _lib)
 
 

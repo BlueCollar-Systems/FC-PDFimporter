@@ -68,6 +68,15 @@ AUTO_FILL_DRAWING_THRESHOLD = 400  # minimum groups to trigger fill-art check
 AUTO_FILL_HEAVY_RATIO = 0.60       # fill-only ratio — 60%+ fills signals art/map
 AUTO_FILL_STROKE_MAX = 0.22        # stroke ratio ceiling — if too many strokes
 #                                    it's a hybrid worth processing as vectors
+#
+# PyMuPDF 1.27+ can coalesce many path ops into fewer drawing groups. That means
+# some decorative art pages now present as ~10-50 groups (not hundreds), but are
+# still pure fill geometry with almost no useful CAD strokes.
+AUTO_FILL_PURE_RATIO = 0.95
+AUTO_FILL_PURE_STROKE_MAX = 0.02
+AUTO_FILL_PURE_MIN_GROUPS = 12
+AUTO_FILL_PURE_MIN_ITEMS = 24
+AUTO_FILL_PURE_LARGE_RECT_RATIO = 0.03
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -142,7 +151,7 @@ def _rect_area(obj) -> Optional[float]:
         return None
 
 
-def _vector_group_stats(drawings: List[dict]) -> Dict[str, float]:
+def _vector_group_stats(drawings: List[dict], page_area: Optional[float] = None) -> Dict[str, float]:
     """Profile coarse vector composition for auto-mode heuristics."""
     total = len(drawings)
     if total <= 0:
@@ -153,11 +162,16 @@ def _vector_group_stats(drawings: List[dict]) -> Dict[str, float]:
             "fill_only_count": 0.0,
             "stroke_count": 0.0,
             "tiny_rect_count": 0.0,
+            "total_item_count": 0.0,
+            "avg_items_per_group": 0.0,
+            "max_rect_ratio": 0.0,
         }
 
     fill_only = 0
     stroke_count = 0
     tiny_rect_count = 0
+    total_item_count = 0
+    max_rect_ratio = 0.0
 
     for grp in drawings:
         fill = grp.get("fill")
@@ -166,9 +180,14 @@ def _vector_group_stats(drawings: List[dict]) -> Dict[str, float]:
             fill_only += 1
         if stroke is not None:
             stroke_count += 1
+        total_item_count += len(grp.get("items", []) or [])
         area = _rect_area(grp.get("rect"))
         if area is not None and area <= AUTO_GLYPH_TINY_RECT_AREA_PT2:
             tiny_rect_count += 1
+        if area is not None and page_area and page_area > 0:
+            ratio = area / page_area
+            if ratio > max_rect_ratio:
+                max_rect_ratio = ratio
 
     denom = float(total)
     return {
@@ -178,6 +197,9 @@ def _vector_group_stats(drawings: List[dict]) -> Dict[str, float]:
         "fill_only_count": float(fill_only),
         "stroke_count": float(stroke_count),
         "tiny_rect_count": float(tiny_rect_count),
+        "total_item_count": float(total_item_count),
+        "avg_items_per_group": (float(total_item_count) / denom),
+        "max_rect_ratio": max_rect_ratio,
     }
 
 
@@ -214,10 +236,25 @@ def _looks_like_fill_art_flood(n_drawings: int,
     This check is intentionally independent of text density so it fires even
     on map pages with few text labels (e.g. a garden plan with only plant names).
     """
-    if n_drawings < AUTO_FILL_DRAWING_THRESHOLD:
-        return False
     fill_ratio = stats.get("fill_only_ratio", 0.0)
     stroke_ratio = stats.get("stroke_ratio", 0.0)
+    total_items = stats.get("total_item_count", 0.0)
+    max_rect_ratio = stats.get("max_rect_ratio", 0.0)
+
+    # New fast path for coalesced pure-fill PDFs (common with newer PyMuPDF):
+    # if the page is almost entirely fill-only and has virtually no stroke
+    # signals, treat it as decorative/map art even at low drawing-group counts.
+    pure_fill = (fill_ratio >= AUTO_FILL_PURE_RATIO
+                 and stroke_ratio <= AUTO_FILL_PURE_STROKE_MAX)
+    if pure_fill and n_drawings >= AUTO_FILL_PURE_MIN_GROUPS:
+        if total_items >= AUTO_FILL_PURE_MIN_ITEMS:
+            return True
+        if max_rect_ratio >= AUTO_FILL_PURE_LARGE_RECT_RATIO:
+            return True
+
+    # Legacy high-count fallback (kept for older parser behavior).
+    if n_drawings < AUTO_FILL_DRAWING_THRESHOLD:
+        return False
     return fill_ratio >= AUTO_FILL_HEAVY_RATIO and stroke_ratio <= AUTO_FILL_STROKE_MAX
 
 
@@ -309,6 +346,14 @@ def _norm_color(col) -> Tuple[float, float, float]:
             return (0.0, 0.0, 0.0)
         if len(vals) == 1:
             return (vals[0], vals[0], vals[0])
+        if len(vals) >= 4:
+            # PyMuPDF can return CMYK tuples for some PDFs. Convert CMYK -> RGB
+            # instead of incorrectly truncating to the first 3 channels.
+            c, m, y, k = vals[0], vals[1], vals[2], vals[3]
+            r = (1.0 - c) * (1.0 - k)
+            g = (1.0 - m) * (1.0 - k)
+            b = (1.0 - y) * (1.0 - k)
+            return (_clamp01(r), _clamp01(g), _clamp01(b))
         while len(vals) < 3:
             vals.append(vals[-1])
         return (vals[0], vals[1], vals[2])
@@ -453,6 +498,12 @@ def _arc_from_cubic(p0, p1, p2, p3, opts: ImportOptions):
         return None
     if rms > opts.arc_fit_tol_mm:
         return None
+
+    # Guard against fits that only look good on average.
+    max_err = max(abs(_len2d(p, center) - r) for p in pts)
+    if max_err > max(opts.arc_fit_tol_mm * 2.5, r * 0.01):
+        return None
+
     v0 = p0 - center
     v3 = p3 - center
     if v0.Length < ZERO_TOL or v3.Length < ZERO_TOL:
@@ -466,7 +517,29 @@ def _arc_from_cubic(p0, p1, p2, p3, opts: ImportOptions):
         d -= 2 * math.pi
     if abs(d) * 180.0 / math.pi < opts.min_arc_angle_deg:
         return None
+
+    # Midpoint must align with the selected minor sweep.
     pmid = pts[len(pts) // 2]
+    vm = pmid - center
+    if vm.Length < ZERO_TOL:
+        return None
+    am = math.atan2(vm.y, vm.x)
+    expected_mid = _normalize_angle(a0 + (d * 0.5))
+    mid_diff = abs(_normalize_angle(am - expected_mid))
+    if mid_diff > (math.pi / 3.0):
+        return None
+
+    # Tangents at cubic endpoints should be close to perpendicular to the
+    # radius vector for a true circular arc.
+    t0 = p1 - p0
+    t3 = p3 - p2
+    for tan, rad in ((t0, v0), (t3, v3)):
+        if tan.Length <= ZERO_TOL or rad.Length <= ZERO_TOL:
+            continue
+        cosang = abs((tan.x * rad.x + tan.y * rad.y) / (tan.Length * rad.Length))
+        if cosang > 0.35:
+            return None
+
     return (p0, pmid, p3)
 
 
@@ -488,6 +561,56 @@ def _edge_arc(p1: "Vector", pmid: "Vector", p2: "Vector"):
         return Part.Arc(p1, pmid, p2).toShape()
     except (RuntimeError, ValueError, TypeError):
         return None
+
+
+def _normalize_angle(angle: float) -> float:
+    """Normalize angle to (-pi, pi]."""
+    while angle <= -math.pi:
+        angle += 2.0 * math.pi
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    return angle
+
+
+def _polyline_run_is_smooth(verts: List["Vector"], max_turn_deg: float = 60.0) -> bool:
+    """Return True when a run behaves like a smooth arc candidate.
+
+    Rejects runs with hard corners or turn-direction reversals that commonly
+    produce false giant arcs when circle-fitting mixed corner+line geometry.
+    """
+    if len(verts) < 5:
+        return False
+
+    max_turn = math.radians(max_turn_deg)
+    prev_sign = 0
+    valid_turns = 0
+
+    for i in range(1, len(verts) - 1):
+        a = verts[i] - verts[i - 1]
+        b = verts[i + 1] - verts[i]
+        ax, ay = a.x, a.y
+        bx, by = b.x, b.y
+
+        la = math.hypot(ax, ay)
+        lb = math.hypot(bx, by)
+        if la <= ZERO_TOL or lb <= ZERO_TOL:
+            continue
+
+        cross = ax * by - ay * bx
+        dot = ax * bx + ay * by
+        turn = abs(math.atan2(cross, dot))
+        if turn > max_turn:
+            return False
+
+        sign = 1 if cross > 1e-9 else (-1 if cross < -1e-9 else 0)
+        if sign != 0:
+            if prev_sign != 0 and sign != prev_sign:
+                return False
+            prev_sign = sign
+
+        valid_turns += 1
+
+    return valid_turns >= 2
 
 
 def _make_shape_obj(edges: List, closed: bool, make_face: bool, fc_doc=None):
@@ -684,13 +807,16 @@ def _polyline_edges_to_arcs(edges: List, opts: ImportOptions) -> List:
         best_arc_end = -1
         best_arc = None
 
-        # Need at least 3 edges (4 vertices) for a reliable arc fit
-        for j in range(i + 3, min(i + 65, n + 1)):  # max 64 segments
+        # Need at least 4 edges (5 vertices) for a reliable arc fit.
+        # 3-edge runs are often orthogonal corners that can falsely circle-fit.
+        for j in range(i + 4, min(i + 65, n + 1)):  # max 64 segments
             run_verts = verts[i:j + 1]
             # Skip if any vertex is None (non-line edge in the run)
             if any(v is None for v in run_verts):
                 break
-            if len(run_verts) < 4:
+            if len(run_verts) < 5:
+                continue
+            if not _polyline_run_is_smooth(run_verts):
                 continue
 
             try:
@@ -700,17 +826,34 @@ def _polyline_edges_to_arcs(edges: List, opts: ImportOptions) -> List:
                 # Accept if fit is good relative to the radius
                 tol = max(opts.arc_fit_tol_mm, r * 0.005)  # 0.5% of radius
                 if rms < tol and r > 0.1:
-                    # Check arc sweep is meaningful
+                    # Check arc sweep is meaningful and midpoint-consistent.
+                    # We only accept the minor sweep between endpoints; if the
+                    # sampled midpoint is far from that sweep's centerline,
+                    # this is likely a false arc candidate.
                     v0 = pts_2d[0] - center
                     vN = pts_2d[-1] - center
-                    if v0.Length > ZERO_TOL and vN.Length > ZERO_TOL:
+                    vm = pts_2d[len(pts_2d) // 2] - center
+                    if v0.Length > ZERO_TOL and vN.Length > ZERO_TOL and vm.Length > ZERO_TOL:
+                        a0 = math.atan2(v0.y, v0.x)
+                        aN = math.atan2(vN.y, vN.x)
+                        am = math.atan2(vm.y, vm.x)
+
+                        sweep = _normalize_angle(aN - a0)
+                        if abs(sweep) * 180.0 / math.pi < opts.min_arc_angle_deg:
+                            continue
+
+                        test_mid = _normalize_angle(a0 + sweep * 0.5)
+                        mid_diff = abs(_normalize_angle(am - test_mid))
+                        if mid_diff > (math.pi / 2.0):
+                            continue
+
                         best_arc_end = j
                         mid_idx = len(pts_2d) // 2
                         best_arc = (run_verts[0], run_verts[mid_idx], run_verts[-1])
             except ValueError:
                 pass
 
-        if best_arc is not None and best_arc_end > i + 2:
+        if best_arc is not None and best_arc_end > i + 3:
             # Replace edges[i:best_arc_end] with a single arc
             p_start, p_mid, p_end = best_arc
             arc_edge = _edge_arc(p_start, p_mid, p_end)
@@ -978,10 +1121,22 @@ def _effective_descender(text: str, font_descender: float) -> float:
     has_descenders = any(ch in _DESCENDER_CHARS for ch in text)
     if has_descenders:
         return font_descender          # full correction
-    # No descending glyphs — apply ~15% of the descender as a minimal
+    # All-caps / numeric rows in schedules and title blocks are typically
+    # baseline-tight; keep the correction minimal for these runs.
+    if text.upper() == text:
+        return font_descender * 0.02
+    # No descending glyphs — apply only a small fraction of the descender.
+    # Draft and PDF font metrics can differ slightly; using too much offset
+    # pushes all-caps table text visibly low.
+    # Keep a conservative baseline-to-bbox gap for non-descending text.
+    #
+    # Tuned from 15% -> 8% based on OCR/engineering title-block samples.
+    # This keeps descender-bearing words accurate while improving alignment
+    # for labels like "TOTAL WEIGHT THIS DRAWING".
+    # No descending glyphs — apply ~8% of the descender as a minimal
     # baseline-to-bottom-of-bbox gap (accounts for the tiny space most
     # fonts leave below the baseline even for non-descending glyphs).
-    return font_descender * 0.15
+    return font_descender * 0.08
 
 
 def _is_near_horizontal(dx: float, dy: float) -> bool:
@@ -1045,7 +1200,13 @@ def _resolve_horizontal_run_overlaps(layout_items: List[dict]) -> List[dict]:
     would overlap the previous run on the same baseline."""
     if not layout_items:
         return layout_items
-    items = sorted(layout_items, key=lambda d: (round(d["baseline_y_pdf"], 3), d["x_pdf"]))
+    # IMPORTANT: tiny baseline jitter (e.g. 334.560 vs 334.562) can invert run
+    # order when sorting primarily by baseline. Preserve left-to-right order
+    # within each logical text line using a coarse line key when available.
+    items = sorted(
+        layout_items,
+        key=lambda d: (d.get("line_key", round(d["baseline_y_pdf"], 1)), d["x_pdf"]),
+    )
     prev = None
     for item in items:
         if not item.get("eligible_for_nudge", False):
@@ -1361,9 +1522,17 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
             pass
 
     # ── Vector drawings ──
-    drawings = page.get_drawings()
+    try:
+        drawings = page.get_drawings()
+    except Exception as e:
+        _warn(f"get_drawings() failed: {e}")
+        drawings = []
     n_drawings = len(drawings)
-    n_images = len(page.get_images(full=True))
+    try:
+        n_images = len(page.get_images(full=True))
+    except Exception as e:
+        _warn(f"get_images() failed: {e}")
+        n_images = 0
     if opts.verbose:
         _msg(f"PDF page {page_num}: {n_drawings} drawing groups, "
              f"{n_images} embedded images found")
@@ -1373,12 +1542,19 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
     if effective_mode == "auto":
         # Auto-detect: profile the page content to choose best mode
         _progress_update(2, "Analyzing page content...")
-        tdict = page.get_text("dict")
+        try:
+            tdict = page.get_text("dict")
+        except Exception as e:
+            _warn(f"get_text(dict) failed during auto-mode: {e}")
+            tdict = {"blocks": []}
         n_text_blocks = sum(1 for b in tdict.get("blocks", []) if b.get("type") == 0)
 
         # Build lightweight vector density metrics once so multiple auto rules
         # can reuse the same profile without rescanning the page.
-        vg_stats = _vector_group_stats(drawings) if n_drawings > 0 else {}
+        vg_stats = _vector_group_stats(
+            drawings,
+            page_area=(page.rect.width * page.rect.height)
+        ) if n_drawings > 0 else {}
 
         # Word extraction is only needed for heavy vector pages where we need
         # to distinguish CAD drawings from text-outline floods.
@@ -1657,6 +1833,12 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         if not items:
             continue
 
+        # PyMuPDF may include clip/group container entries in drawing streams.
+        # These are not visible edges and should never become CAD geometry.
+        grp_type = str(path_group.get("type", "") or "").lower()
+        if grp_type in {"clip", "group"}:
+            continue
+
         stroke = path_group.get("color") or path_group.get("stroke")
         stroke_rgb = _norm_color(stroke)
         fill = path_group.get("fill")
@@ -1664,6 +1846,23 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         width = _as_float(path_group.get("width") or path_group.get("lineWidth"))
         dashes = _parse_dashes(path_group.get("dashes"))
         layer_name = path_group.get("oc") or path_group.get("layer")
+
+        # ── Skip invisible / clipping paths ──
+        # Paths with no stroke AND no fill are PDF clipping boundaries — they
+        # define mask regions, not visible geometry.  Drawing them produces
+        # large arcs/rectangles that extend beyond the page and clutter the view.
+        if stroke is None and fill is None:
+            continue
+
+        # ── Skip page-sized background fills ──
+        # Some PDFs include a full-page rectangle as a background fill.
+        # These add no useful geometry and obscure the actual drawing content.
+        grp_rect = path_group.get("rect")
+        if grp_rect and _is_rect(grp_rect):
+            grp_area = abs(grp_rect.width * grp_rect.height)
+            page_area = page.rect.width * page.rect.height
+            if grp_area > page_area * 0.95:
+                continue
 
         parent = _parent_for(stroke_rgb, layer_name)
 
@@ -1924,7 +2123,7 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                 text_parent = top_group or fc_doc
                 _progress_update(87, "Rendering text glyphs via pdftocairo...")
                 result = render_text(
-                    pdf_path, page_num, page_h, scale,
+                    pdf_path, page_num, page_h, scale, page.rect.width,
                     fc_doc=fc_doc, parent_group=text_parent, flip_y=opts.flip_y)
                 if result and result.get("glyphs", 0) > 0:
                     svg_text_done = True
@@ -1990,7 +2189,8 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
 
                     placed = False
                     for grp in y_groups:
-                        ref_origin = grp[0]["spans"][0].get("origin")
+                        _ref_spans = grp[0].get("spans") or []
+                        ref_origin = _ref_spans[0].get("origin") if _ref_spans else None
                         ref_y = ref_origin[1] if ref_origin else grp[0].get("bbox", (0, 0, 0, 0))[1]
                         if abs(ly - ref_y) < 2.0:  # same Y
                             grp_has_frac = any(_is_frac_fragment(g, block_main_size) for g in grp)
@@ -2054,17 +2254,44 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                     _stripped = content.strip()
                     is_short = len(_stripped) <= 40
 
-                    # Use PDF text origin (baseline) for positioning.
-                    # If origin unavailable, approximate from bbox + descender.
+                    # Use span origins to recover the PDF baseline. Some OCR /
+                    # generated PDFs contain outlier span origins, so we use the
+                    # median origin and sanity-check it against a bbox-derived
+                    # baseline estimate.
                     _first_span = grp[0].get("spans", [{}])[0]
-                    first_origin = _first_span.get("origin")
-                    if first_origin:
-                        baseline_y = first_origin[1]
+                    origin_xy = []
+                    for _sp in all_spans:
+                        _o = _sp.get("origin")
+                        if _o and len(_o) >= 2:
+                            try:
+                                origin_xy.append((float(_o[0]), float(_o[1])))
+                            except (TypeError, ValueError):
+                                pass
+
+                    size_pt = max(float(s.get("size", 3)) for s in all_spans)
+                    _desc_abs = abs(float(_first_span.get("descender", 0.15)))
+                    baseline_from_bbox = all_y1 - _desc_abs * size_pt
+
+                    if origin_xy:
+                        ys = sorted(p[1] for p in origin_xy)
+                        mid = len(ys) // 2
+                        if len(ys) % 2 == 1:
+                            baseline_from_origin = ys[mid]
+                        else:
+                            baseline_from_origin = (ys[mid - 1] + ys[mid]) * 0.5
+
+                        # If origin baseline disagrees strongly with bbox-based
+                        # estimate, trust bbox. This prevents occasional low/high
+                        # label drift in title blocks.
+                        drift = abs(baseline_from_origin - baseline_from_bbox)
+                        drift_tol = max(0.9, size_pt * 0.28)
+                        baseline_y = (
+                            baseline_from_bbox
+                            if drift > drift_tol
+                            else baseline_from_origin
+                        )
                     else:
-                        # bbox[3] includes descenders; shift up by descender
-                        _desc = abs(float(_first_span.get("descender", 0.15)))
-                        _sz = float(_first_span.get("size", 12))
-                        baseline_y = all_y1 - _desc * _sz
+                        baseline_y = baseline_from_bbox
 
                     text_dir = grp[0].get("dir", (1.0, 0.0))
                     if text_dir and len(text_dir) >= 2:
@@ -2085,10 +2312,11 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                         x_pdf = (all_x0 + all_x1) / 2.0
                         justification = "Center"
                     else:
-                        x_pdf = first_origin[0] if first_origin else all_x0
+                        # Left-anchored rows should start from the true left-most
+                        # text origin, not whichever span happened to come first.
+                        x_pdf = min((p[0] for p in origin_xy), default=all_x0)
                         justification = "Left"
 
-                    size_pt = max(float(s.get("size", 3)) for s in all_spans)
                     font = str(all_spans[0].get("font", ""))
                     # Grab PyMuPDF normalised font metrics for baseline offset
                     _asc = float(all_spans[0].get("ascender", 0.8))
@@ -2114,6 +2342,7 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                         "render_width_pdf": render_width_pdf,
                         "justification": justification,
                         "eligible_for_nudge": bool(is_horizontal and justification == "Left" and has_siblings),
+                        "line_key": _gy,
                         "ascender": _asc,
                         "descender": _desc,
                     })
@@ -2228,14 +2457,31 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         try:
             img_group = _make_group(top_group or fc_doc, "Images", fc_doc)
             imglist = page.get_images(full=True)
+            seen_xrefs = set()
             for img_info in imglist:
                 xref = img_info[0]
+                if xref in seen_xrefs:
+                    continue
+                seen_xrefs.add(xref)
                 rects = page.get_image_rects(xref)
                 if not rects:
                     continue
                 try:
                     pix = fitz.Pixmap(pdf_doc, xref)
-                    if pix.alpha:
+                    # Convert any non-plain-RGB source to RGB before saving PNG.
+                    # This handles CMYK / DeviceN / grayscale / alpha safely.
+                    cs = getattr(pix, "colorspace", None)
+                    cs_n = None
+                    try:
+                        cs_n = int(getattr(cs, "n", 0)) if cs is not None else None
+                    except (TypeError, ValueError):
+                        cs_n = None
+                    needs_rgb = (
+                        pix.alpha
+                        or pix.n != 3
+                        or (cs_n is not None and cs_n != 3)
+                    )
+                    if needs_rgb:
                         pix = fitz.Pixmap(fitz.csRGB, pix)
                     tmpdir = os.path.join(
                         FreeCAD.getUserAppDataDir(),
@@ -2308,20 +2554,79 @@ def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
     except ImportError:
         pass
 
-    pdoc = fitz.open(pdf_path)
-    total_pages = len(pdoc)
-    pdoc.close()
+    try:
+        pdoc = fitz.open(pdf_path)
+        total_pages = len(pdoc)
+        pdoc.close()
+    except Exception as e:
+        _err(f"Cannot open PDF: {e}")
+        return
+
+    # Determine page height(s) for multi-page Y-offset spacing.
+    # Must use the SAME scale as import_pdf_page so offsets match geometry coordinates.
+    _unit_scale = (MM_PER_PT if opts.scale_to_mm else 1.0) * opts.user_scale
+    page_height_scaled = 0
+    try:
+        pdoc2 = fitz.open(pdf_path)
+        pg0 = pdoc2.load_page(0)
+        page_height_scaled = pg0.rect.height * _unit_scale
+        pdoc2.close()
+    except Exception:
+        page_height_scaled = 792 * _unit_scale  # fallback to US Letter height in points
+
+    pages = opts.pages or [1]
+    page_heights_scaled: Dict[int, float] = {}
+    try:
+        pdoc3 = fitz.open(pdf_path)
+        for p in pages:
+            if 1 <= p <= total_pages:
+                try:
+                    page_heights_scaled[p] = pdoc3.load_page(p - 1).rect.height * _unit_scale
+                except Exception:
+                    pass
+        pdoc3.close()
+    except Exception:
+        pass
 
     # Wrap entire import in a FreeCAD transaction so Ctrl+Z undoes it in one step
     fc_doc.openTransaction("Import PDF")
     try:
-        pages = opts.pages or [1]
+        imported_count = 0
+        running_stack_offset = 0.0
+        last_page_height = page_height_scaled
         for p in pages:
             if p < 1 or p > total_pages:
                 _warn(f"Skipping out-of-range page {p} (PDF has {total_pages} pages)")
                 continue
             try:
                 import_pdf_page(pdf_path, page_num=p, opts=opts)
+                curr_page_height = page_heights_scaled.get(p, page_height_scaled)
+                # Offset each page group downward so they don't overlap.
+                # FreeCAD may rename the group (e.g., PDF_Page_2 → PDF_Page_2001)
+                # so we search for the most recently created matching group.
+                if len(pages) > 1 and imported_count > 0:
+                    running_stack_offset += last_page_height * 1.3
+                    y_shift = -running_stack_offset
+                    grp = None
+                    for obj in reversed(fc_doc.Objects):
+                        if (obj.Name.startswith(f"PDF_Page_{p}") and
+                                obj.isDerivedFrom("App::DocumentObjectGroup")):
+                            grp = obj
+                            break
+                    if grp and hasattr(grp, "Group"):
+                        _msg(f"Offsetting {grp.Name} by Y={y_shift:.1f}")
+                        for child in grp.Group:
+                            try:
+                                if hasattr(child, "Placement"):
+                                    child.Placement.Base.y += y_shift
+                                if hasattr(child, "Group"):
+                                    for sub in child.Group:
+                                        if hasattr(sub, "Placement"):
+                                            sub.Placement.Base.y += y_shift
+                            except (AttributeError, RuntimeError):
+                                pass
+                last_page_height = curr_page_height
+                imported_count += 1
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as e:
                 _err(f"Failed to import page {p}: {e}\n{traceback.format_exc()}")
         fc_doc.commitTransaction()

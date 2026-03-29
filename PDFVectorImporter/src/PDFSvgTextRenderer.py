@@ -61,22 +61,42 @@ def find_pdftocairo() -> Optional[str]:
 
     # 4) Common Windows locations
     if sys.platform == "win32":
+        candidates = []
         for pattern_base in [
             os.path.join(os.environ.get("LOCALAPPDATA", ""),
                          "Programs", "MiKTeX", "miktex", "bin", "x64"),
             r"C:\Program Files\MiKTeX\miktex\bin\x64",
+            r"C:\Program Files\FreeCAD 1.1\bin",
+            r"C:\Program Files\poppler\Library\bin",
+            r"C:\Program Files\poppler\bin",
             r"C:\poppler\bin",
             r"C:\tools\poppler\bin",
         ]:
-            candidate = os.path.join(pattern_base, "pdftocairo.exe")
+            candidates.append(os.path.join(pattern_base, "pdftocairo.exe"))
+        # Common FreeCAD installs (portable / multiple versions)
+        for cand in (
+            list(_glob_paths(r"C:\Program Files\FreeCAD*\bin\pdftocairo.exe")) +
+            list(_glob_paths(r"C:\Program Files\FreeCAD *\bin\pdftocairo.exe"))
+        ):
+            candidates.append(cand)
+        for candidate in candidates:
             if os.path.isfile(candidate):
                 return candidate
 
     return None
 
 
+def _glob_paths(pattern: str):
+    try:
+        import glob
+        return glob.glob(pattern)
+    except Exception:
+        return []
+
+
 def render_text(pdf_path: str, page_num: int, page_h: float,
-                scale: float, fc_doc=None, parent_group=None,
+                scale: float, page_w: Optional[float] = None,
+                fc_doc=None, parent_group=None,
                 flip_y: bool = True) -> Optional[dict]:
     """Render text from a PDF page as vector glyph geometry.
 
@@ -107,7 +127,7 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
             kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         subprocess.run(
             [exe, "-svg", "-f", str(page_num), "-l", str(page_num),
-             pdf_path, svg_path],
+             "--", pdf_path, svg_path],
             check=True, timeout=90, capture_output=True, **kw)
 
         if not os.path.isfile(svg_path):
@@ -138,9 +158,17 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
     if not svg:
         return None
 
-    # Parse SVG dimensions
-    m = re.search(r'height="([^"]+)"', svg)
-    svg_h = float(m.group(1)) if m else page_h
+    # Parse SVG dimensions / viewBox
+    vb_min_x, vb_min_y, vb_w, vb_h = _parse_viewbox(svg)
+    if vb_w <= 0 or vb_h <= 0:
+        svg_w = _parse_svg_dim(svg, "width", page_w if page_w and page_w > 0 else page_h)
+        svg_h = _parse_svg_dim(svg, "height", page_h)
+        vb_min_x, vb_min_y, vb_w, vb_h = 0.0, 0.0, float(svg_w), float(svg_h)
+
+    page_w_eff = float(page_w) if page_w and page_w > 0 else float(vb_w)
+    page_h_eff = float(page_h) if page_h and page_h > 0 else float(vb_h)
+    x_unit_to_mm = (page_w_eff * scale) / max(vb_w, 1e-12)
+    y_unit_to_mm = (page_h_eff * scale) / max(vb_h, 1e-12)
 
     # Parse glyph definitions
     glyph_defs = {}
@@ -150,10 +178,7 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
             glyph_defs[gid] = path_d
 
     # Parse use placements
-    placements = []
-    for gid, x, y in re.findall(
-            r'<use xlink:href="#(glyph-\d+-\d+)" x="([^"]+)" y="([^"]+)"', svg):
-        placements.append((gid, float(x), float(y)))
+    placements = _parse_use_placements(svg)
 
     if not placements:
         return {"shapes": 0, "glyphs": 0}
@@ -161,7 +186,7 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
     # Build Part.Shape for each unique glyph
     glyph_shapes: Dict[str, Part.Shape] = {}
     for gid, path_d in glyph_defs.items():
-        edges = _svg_path_to_edges(path_d, scale)
+        edges = _svg_path_to_edges(path_d, x_unit_to_mm, y_unit_to_mm)
         if edges:
             try:
                 compound = Part.makeCompound(edges)
@@ -173,23 +198,40 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
     all_shapes = []
     glyph_count = 0
 
-    for gid, use_x, use_y in placements:
+    for gid, use_x, use_y, matrix in placements:
         shape = glyph_shapes.get(gid)
         if shape is None:
             continue
 
         # SVG coords → FreeCAD coords
-        # Glyph use positions are in viewBox coords (PDF points)
-        fc_x = use_x * scale
-        if flip_y:
-            fc_y = (svg_h - use_y) * scale
+        # Glyph use positions are in viewBox coordinates.
+        placed = None
+        if matrix and len(matrix) >= 6:
+            a, b, c, d, e, f = [float(v) for v in matrix[:6]]
+            e += float(use_x)
+            f += float(use_y)
+            tx = (e - vb_min_x) * x_unit_to_mm
+            ty = (vb_h + vb_min_y - f) * y_unit_to_mm if flip_y else (f - vb_min_y) * y_unit_to_mm
+
+            ratio_xy = (x_unit_to_mm / y_unit_to_mm) if abs(y_unit_to_mm) > 1e-12 else 1.0
+            ratio_yx = (y_unit_to_mm / x_unit_to_mm) if abs(x_unit_to_mm) > 1e-12 else 1.0
+            a11 = a
+            a12 = -c * ratio_xy
+            a21 = -b * ratio_yx
+            a22 = d
+            placed = _shape_affine_2d(shape, a11, a12, a21, a22, tx, ty)
         else:
-            fc_y = use_y * scale
+            tx = (float(use_x) - vb_min_x) * x_unit_to_mm
+            ty = ((vb_h + vb_min_y - float(use_y)) * y_unit_to_mm) if flip_y else ((float(use_y) - vb_min_y) * y_unit_to_mm)
+            try:
+                placed = shape.translated(Vector(tx, ty, 0.0))
+            except (AttributeError, RuntimeError, TypeError):
+                placed = None
 
         try:
-            placed = shape.translated(Vector(fc_x, fc_y, 0.0))
-            all_shapes.append(placed)
-            glyph_count += 1
+            if placed is not None:
+                all_shapes.append(placed)
+                glyph_count += 1
         except (AttributeError, RuntimeError, TypeError):
             pass
 
@@ -213,7 +255,93 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
         return None
 
 
-def _svg_path_to_edges(d: str, scale: float) -> List:
+def _parse_svg_dim(svg: str, attr: str, fallback: float) -> float:
+    m = re.search(rf'{attr}="([^"]+)"', svg)
+    if not m:
+        return float(fallback)
+    raw = m.group(1)
+    m_num = re.match(r'\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)', raw)
+    if not m_num:
+        return float(fallback)
+    try:
+        return float(m_num.group(1))
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
+def _parse_viewbox(svg: str):
+    m = re.search(r'viewBox="([^"]+)"', svg, re.IGNORECASE)
+    if not m:
+        return (0.0, 0.0, 0.0, 0.0)
+    try:
+        vals = [float(v) for v in re.split(r"[\s,]+", m.group(1).strip()) if v]
+        if len(vals) >= 4:
+            return (vals[0], vals[1], vals[2], vals[3])
+    except (TypeError, ValueError):
+        pass
+    return (0.0, 0.0, 0.0, 0.0)
+
+
+def _parse_use_placements(svg: str):
+    placements = []
+    for m in re.finditer(r'<use\b[^>]*>', svg, re.IGNORECASE | re.DOTALL):
+        tag = m.group(0)
+        href_m = re.search(r'(?:xlink:href|href)="([^"]+)"', tag, re.IGNORECASE)
+        if not href_m:
+            continue
+        href = href_m.group(1).strip()
+        if not href.startswith("#glyph-"):
+            continue
+        gid = href[1:]
+        x = _attr_float(tag, "x", 0.0)
+        y = _attr_float(tag, "y", 0.0)
+        matrix = None
+        tr_m = re.search(r'transform="([^"]+)"', tag, re.IGNORECASE)
+        if tr_m:
+            mm = re.search(r'matrix\(([^)]*)\)', tr_m.group(1), re.IGNORECASE)
+            if mm:
+                parts = [p for p in re.split(r'[\s,]+', mm.group(1).strip()) if p]
+                if len(parts) >= 6:
+                    try:
+                        matrix = [float(v) for v in parts[:6]]
+                    except (TypeError, ValueError):
+                        matrix = None
+        placements.append((gid, x, y, matrix))
+    return placements
+
+
+def _attr_float(tag: str, name: str, default: float = 0.0) -> float:
+    m = re.search(rf'\b{name}="([^"]+)"', tag, re.IGNORECASE)
+    if not m:
+        return float(default)
+    try:
+        return float(m.group(1))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _shape_affine_2d(shape, a11: float, a12: float, a21: float, a22: float,
+                     tx: float, ty: float):
+    try:
+        m = FreeCAD.Matrix()
+        m.A11 = float(a11); m.A12 = float(a12); m.A13 = 0.0; m.A14 = float(tx)
+        m.A21 = float(a21); m.A22 = float(a22); m.A23 = 0.0; m.A24 = float(ty)
+        m.A31 = 0.0; m.A32 = 0.0; m.A33 = 1.0; m.A34 = 0.0
+        m.A41 = 0.0; m.A42 = 0.0; m.A43 = 0.0; m.A44 = 1.0
+        try:
+            transformed = shape.transformGeometry(m)
+            if transformed is not None:
+                return transformed
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+        cp = shape.copy()
+        cp.transformShape(m, True, False)
+        return cp
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _svg_path_to_edges(d: str, scale_x: float, scale_y: Optional[float] = None) -> List:
     """Parse SVG path d="" into Part edges.
 
     Glyph coordinates are in PDF points, Y-down.
@@ -228,8 +356,11 @@ def _svg_path_to_edges(d: str, scale: float) -> List:
     nums: List[float] = []
     prev_cubic_cp2: Optional[List[float]] = None  # second control point of previous cubic (in abs coords)
 
+    if scale_y is None:
+        scale_y = scale_x
+
     def mk(gx: float, gy: float) -> Vector:
-        return Vector(gx * scale, -gy * scale, 0.0)
+        return Vector(gx * scale_x, -gy * scale_y, 0.0)
 
     def flush_subpath():
         nonlocal subpath_pts

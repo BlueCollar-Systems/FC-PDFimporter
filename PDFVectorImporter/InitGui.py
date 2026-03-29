@@ -29,6 +29,37 @@ class PDFVectorImporterWorkbench(FreeCADGui.Workbench):
         icon = os.path.join(base, "resources", "ImportPDFVector.svg") if base else ""
         self.__class__.Icon = icon if os.path.isfile(icon) else ""
 
+    def _prioritize_paths(self, paths):
+        """Ensure local workbench paths win over stale/duplicate installs."""
+        for p in (x for x in reversed(paths) if x):
+            try:
+                while p in sys.path:
+                    sys.path.remove(p)
+            except (AttributeError, ValueError):
+                pass
+            sys.path.insert(0, p)
+
+    def _evict_stale_modules(self, base):
+        """Drop already-imported modules that came from another install path."""
+        stale_names = (
+            "PDFImporterCmd",
+            "PDFScaleTool",
+            "PDFTools",
+            "PDFImporterCore",
+            "PDFImportHandler",
+            "PDFVectorImporter.src.PDFImporterCmd",
+            "PDFVectorImporter.src.PDFScaleTool",
+            "PDFVectorImporter.src.PDFImporterCore",
+        )
+        for name in stale_names:
+            mod = sys.modules.get(name)
+            mod_path = str(getattr(mod, "__file__", "") or "")
+            if mod and mod_path and not mod_path.startswith(base):
+                try:
+                    del sys.modules[name]
+                except KeyError:
+                    pass
+
     def Initialize(self):
         # Find workbench root again (Initialize runs in a different context)
         base = ""
@@ -46,11 +77,10 @@ class PDFVectorImporterWorkbench(FreeCADGui.Workbench):
         lib = os.path.join(src, "lib")
 
         # Ensure paths are importable
-        for p in (os.path.dirname(base), base, src):
-            if p and p not in sys.path:
-                sys.path.append(p)
-        if os.path.isdir(lib) and lib not in sys.path:
-            sys.path.insert(0, lib)
+        self._prioritize_paths([os.path.dirname(base), base, src])
+        if os.path.isdir(lib):
+            self._prioritize_paths([lib])
+        self._evict_stale_modules(base)
 
         # Register commands — each in its own try/except
         try:
@@ -105,9 +135,12 @@ class PDFVectorImporterWorkbench(FreeCADGui.Workbench):
                 base = d
                 break
         if base:
-            lib = os.path.join(base, "src", "lib")
-            if os.path.isdir(lib) and lib not in sys.path:
-                sys.path.insert(0, lib)
+            src = os.path.join(base, "src")
+            lib = os.path.join(src, "lib")
+            self._prioritize_paths([os.path.dirname(base), base, src])
+            if os.path.isdir(lib):
+                self._prioritize_paths([lib])
+            self._evict_stale_modules(base)
 
         # Check for PyMuPDF
         has_fitz = False
