@@ -83,6 +83,12 @@ begin
 rescue Exception => e
   begin
     require "json"
+    msg = begin
+      ("Bootstrap error: #{e.class}: #{e.message}").to_s
+        .encode("UTF-8", "binary", invalid: :replace, undef: :replace, replace: "?")
+    rescue Exception
+      "Bootstrap error: #{e.class}"
+    end
     payload_path = ENV["BC_PDF_QA_PAYLOAD"].to_s
     if !payload_path.strip.empty? && File.file?(payload_path)
       payload_data = JSON.parse(File.read(payload_path)) rescue {}
@@ -92,7 +98,7 @@ rescue Exception => e
           f.write(JSON.pretty_generate({
             "platform" => "SU",
             "status" => "FAIL",
-            "message" => "Bootstrap error: #{e.class}: #{e.message}"
+            "message" => msg
           }))
         end
       end

@@ -126,7 +126,7 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
         if sys.platform == "win32":
             kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         subprocess.run(
-            [exe, "-svg", "-f", str(page_num), "-l", str(page_num),
+            [exe, "-svg", "-cropbox", "-f", str(page_num), "-l", str(page_num),
              "--", pdf_path, svg_path],
             check=True, timeout=90, capture_output=True, **kw)
 

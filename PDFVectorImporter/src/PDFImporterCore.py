@@ -2337,6 +2337,7 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                         "angle_deg": angle_deg,
                         "is_horizontal": is_horizontal,
                         "baseline_y_pdf": baseline_y,
+                        "baseline_is_origin": bool(origin_xy and baseline_y != baseline_from_bbox),
                         "x_pdf": x_pdf,
                         "orig_width_pdf": orig_width_pdf,
                         "render_width_pdf": render_width_pdf,
@@ -2356,13 +2357,14 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                     # box, but we have the PDF baseline position.  Shift down
                     # (in FreeCAD Y-up space) by the descender so the glyph
                     # baseline lands where the PDF specified it.
-                    # Use _effective_descender() to reduce the offset for
-                    # non-descending text (all-caps BOM entries, dimensions).
-                    _d = _effective_descender(
-                        item["content"],
-                        float(item.get("descender", -0.2)),
-                    )
-                    pos.y += _d * item["font_size_fc"]
+                    # SKIP this correction when baseline came from span origins
+                    # (which are already the true baseline — no descender needed).
+                    if not item.get("baseline_is_origin", False):
+                        _d = _effective_descender(
+                            item["content"],
+                            float(item.get("descender", -0.2)),
+                        )
+                        pos.y += _d * item["font_size_fc"]
                     try:
                         rot = Rotation(Vector(0, 0, 1), item["angle_deg"])
                         t = Draft.make_text([item["content"]], placement=Placement(pos, rot))
