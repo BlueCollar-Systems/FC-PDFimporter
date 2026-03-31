@@ -34,3 +34,7 @@ _inspect_*/
 # Debug probe scripts
 fc_cmd_probe*.py
 PDFVectorImporter/fc_cmd_probe*.py
+
+# Local build outputs
+dist/
+*.zip
