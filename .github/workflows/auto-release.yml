@@ -1,0 +1,76 @@
+name: auto-release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version to')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read and bump version
+        id: version
+        run: |
+          # Read current version from package.xml
+          current=$(grep -oP '<version>\K[^<]+' PDFVectorImporter/package.xml)
+          echo "current=$current"
+
+          # Split and bump patch
+          IFS='.' read -r major minor patch <<< "$current"
+          new_patch=$((patch + 1))
+          new_version="${major}.${minor}.${new_patch}"
+          echo "new=$new_version"
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+
+          # Update version in package.xml
+          sed -i "s/<version>${current}<\/version>/<version>${new_version}<\/version>/" PDFVectorImporter/package.xml
+
+          # Update date in package.xml
+          today=$(date +%Y-%m-%d)
+          sed -i "s/<date>[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}<\/date>/<date>${today}<\/date>/" PDFVectorImporter/package.xml
+
+          # Update README badge
+          sed -i "s/Version-${current}-/Version-${new_version}-/" README.md
+
+      - name: Build .zip
+        run: python build_release.py
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PDFVectorImporter/package.xml README.md
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          git push
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v${{ steps.version.outputs.version }}"
+          ZIP=$(ls PDFVectorImporter_v*.zip)
+          gh release create "$VERSION" \
+            --title "$VERSION — PDF Vector Importer for FreeCAD" \
+            --notes "Automated release from latest \`main\` commit.
+
+          **Install:** Download \`${ZIP}\` below, extract into your FreeCAD Mod folder, and restart FreeCAD. Or install via **Tools > Addon Manager**." \
+            --latest \
+            "$ZIP"
