@@ -3,7 +3,7 @@
 **BUILT. NOT BOUGHT.**
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-![Version: 3.5.0](https://img.shields.io/badge/Version-3.5.0-blue.svg)
+![Version: 3.6.0](https://img.shields.io/badge/Version-3.6.0-blue.svg)
 ![Platform: FreeCAD 0.21+](https://img.shields.io/badge/Platform-FreeCAD%200.21%2B-orange.svg)
 
 Import vector geometry, text, and images from PDF files into FreeCAD as editable Part objects.
@@ -35,6 +35,12 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 3. Click **Install**
 4. Restart FreeCAD
 
+### Windows Setup.exe (Easy Manual Install)
+1. Download `PDFVectorImporter_Setup_vX.Y.Z.exe` from Releases.
+2. Close FreeCAD.
+3. Run the installer (no admin rights required).
+4. Restart FreeCAD.
+
 ### Manual Installation
 1. Clone this repository:
    ```bash
@@ -49,6 +55,28 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
    pip install PyMuPDF
    ```
 4. Restart FreeCAD
+
+## Building Release Artifacts
+
+### Build Addon ZIP
+```bash
+python build_release.py
+```
+
+### Build Windows Installer (.exe)
+1. Install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+2. Run:
+   ```bash
+   python build_windows_installer.py
+   ```
+3. Output files are written to `dist/`:
+   - `PDFVectorImporter_vX.Y.Z.zip`
+   - `PDFVectorImporter_Setup_vX.Y.Z.exe`
+
+### Auto-Build on GitHub Releases
+1. Push a tag in `vX.Y.Z` format (example: `v3.5.1`).
+2. GitHub Actions workflow `windows-release` builds both artifacts.
+3. The workflow attaches the ZIP and Setup.exe to that GitHub Release.
 
 ## Usage
 

@@ -37,6 +37,7 @@ EXCLUDE_DIRS = {
     ".ruff_cache",
     ".github",
     ".git",
+    "qa_runs",
 }
 
 EXCLUDE_FILES = {
@@ -49,6 +50,7 @@ EXCLUDE_FILES = {
     "fc_check_fitz.py",
     "run_pdf_vector_importer_tests.py",
     "su_manual_verification_checklist.md",
+    "qa_config_local_live.json",
 }
 
 EXCLUDE_SUFFIXES = {
