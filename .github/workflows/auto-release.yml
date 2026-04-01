@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  version-and-tag:
+  version-build-release:
     if: "!startsWith(github.event.head_commit.message, 'chore: bump version to')"
     runs-on: ubuntu-latest
     steps:
@@ -82,6 +82,9 @@ jobs:
           out.write_text(f"version={new_version}\n", encoding="utf-8")
           PY
 
+      - name: Build release zip
+        run: python build_release.py
+
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
@@ -91,14 +94,26 @@ jobs:
           git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
           git push
 
-      - name: Create and push version tag
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          TAG="v${{ steps.version.outputs.version }}"
+          VERSION="v${{ steps.version.outputs.version }}"
+          ZIP="PDFVectorImporter_v${{ steps.version.outputs.version }}.zip"
+
           git fetch --tags --force
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag ${TAG} already exists."
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "Tag ${VERSION} already exists — skipping."
             exit 0
           fi
-          git tag "${TAG}"
-          git push origin "${TAG}"
+          git tag "${VERSION}"
+          git push origin "${VERSION}"
+
+          gh release create "${VERSION}" \
+            --title "${VERSION} — PDF Vector Importer for FreeCAD" \
+            --notes "Automated release from latest \`main\` commit.
+
+          **Install:** Download \`${ZIP}\` below, extract into your FreeCAD Mod folder, and restart FreeCAD. Or install via **Tools > Addon Manager**." \
+            --latest \
+            "${ZIP}"
