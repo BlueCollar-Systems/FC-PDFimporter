@@ -38,6 +38,7 @@ EXCLUDE_DIRS = {
     ".github",
     ".git",
     "qa_runs",
+    "adapters",  # CLI test harnesses — not needed at FreeCAD runtime
 }
 
 EXCLUDE_FILES = {
