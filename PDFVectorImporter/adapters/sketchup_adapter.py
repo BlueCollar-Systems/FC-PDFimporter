@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 SketchUp adapter for PDF Vector Importer QA.
 
@@ -18,7 +17,6 @@ add a small Ruby harness that:
 Typical use:
 python adapters/sketchup_adapter.py --config qa_config.json --test-id SU-OCG-001 --input "C:/tests/1071 - Rev 0.pdf" --preset Full --dry-run
 """
-
 from __future__ import annotations
 
 import argparse

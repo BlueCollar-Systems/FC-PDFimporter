@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 FreeCAD adapter for PDF Vector Importer QA.
 
@@ -12,7 +11,6 @@ Purpose:
 Typical use:
 python adapters/freecad_adapter.py --config qa_config.json --test-id FC-GEO-001 --input "C:/tests/1071 - Rev 0.pdf" --preset "Shop Drawing" --dry-run
 """
-
 from __future__ import annotations
 
 import argparse
