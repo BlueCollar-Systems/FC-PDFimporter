@@ -1,0 +1,4 @@
+# Development dependencies for PDF Vector Importer
+# Runtime dependency (PyMuPDF) is managed via FreeCAD Addon Manager — see package.xml
+ruff>=0.4.0
+openpyxl>=3.1.0

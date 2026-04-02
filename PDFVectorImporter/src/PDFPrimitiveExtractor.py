@@ -8,7 +8,7 @@ Rule 1: Parser modules must not know about domain-specific logic.
 from __future__ import annotations
 import math
 import re
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from PDFPrimitives import (
     Primitive, NormalizedText, PageData, next_id
@@ -25,9 +25,9 @@ def _xy(obj) -> Tuple[float, float]:
     return 0.0, 0.0
 
 
-def _norm_color(col) -> Optional[Tuple[float, float, float]]:
+def _norm_color(col) -> Tuple[float, float, float]:
     if col is None:
-        return None
+        return (0.0, 0.0, 0.0)
     try:
         if isinstance(col, (int, float)):
             g = max(0.0, min(1.0, float(col)))

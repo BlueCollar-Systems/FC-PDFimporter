@@ -2551,44 +2551,33 @@ def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
 
     # Reset ID counter once at the start of a multi-page import
     try:
-        from .PDFPrimitives import reset_ids
+        from PDFPrimitives import reset_ids
         reset_ids()
     except ImportError:
         pass
 
-    try:
-        pdoc = fitz.open(pdf_path)
-        total_pages = len(pdoc)
-        pdoc.close()
-    except Exception as e:
-        _err(f"Cannot open PDF: {e}")
-        return
+    # Clean up temp raster images from previous imports
+    cleanup_temp_files()
 
-    # Determine page height(s) for multi-page Y-offset spacing.
-    # Must use the SAME scale as import_pdf_page so offsets match geometry coordinates.
+    # Open PDF once to gather page count and heights (avoids triple-open + handle leaks)
     _unit_scale = (MM_PER_PT if opts.scale_to_mm else 1.0) * opts.user_scale
-    page_height_scaled = 0
-    try:
-        pdoc2 = fitz.open(pdf_path)
-        pg0 = pdoc2.load_page(0)
-        page_height_scaled = pg0.rect.height * _unit_scale
-        pdoc2.close()
-    except Exception:
-        page_height_scaled = 792 * _unit_scale  # fallback to US Letter height in points
-
+    page_height_scaled = 792 * _unit_scale  # default: US Letter height in points
     pages = opts.pages or [1]
     page_heights_scaled: Dict[int, float] = {}
     try:
-        pdoc3 = fitz.open(pdf_path)
-        for p in pages:
-            if 1 <= p <= total_pages:
-                try:
-                    page_heights_scaled[p] = pdoc3.load_page(p - 1).rect.height * _unit_scale
-                except Exception:
-                    pass
-        pdoc3.close()
-    except Exception:
-        pass
+        with fitz.open(pdf_path) as pdoc:
+            total_pages = len(pdoc)
+            if total_pages > 0:
+                page_height_scaled = pdoc.load_page(0).rect.height * _unit_scale
+            for p in pages:
+                if 1 <= p <= total_pages:
+                    try:
+                        page_heights_scaled[p] = pdoc.load_page(p - 1).rect.height * _unit_scale
+                    except (ValueError, RuntimeError):
+                        pass
+    except (RuntimeError, OSError) as e:
+        _err(f"Cannot open PDF: {e}")
+        return
 
     # Wrap entire import in a FreeCAD transaction so Ctrl+Z undoes it in one step
     fc_doc.openTransaction("Import PDF")
