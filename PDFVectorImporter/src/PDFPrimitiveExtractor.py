@@ -17,6 +17,34 @@ from PDFPrimitives import (
 MM_PER_PT = 25.4 / 72.0
 
 
+def _parse_dashes(raw):
+    """Normalize PyMuPDF dash patterns into a list of floats or None.
+
+    PyMuPDF returns dash patterns as strings like '[ 6 6 ] 0'.
+    This converts them to [6.0, 6.0] for downstream consumers,
+    and returns None for solid lines.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s or s in ("[] 0", "() 0"):
+            return None
+        # Extract numbers between brackets: '[ 6 6 ] 0' -> [6.0, 6.0]
+        m = re.search(r"[\[\(](.*?)[\]\)]", s)
+        if m:
+            nums = [float(v) for v in m.group(1).split() if v]
+            return nums if nums else None
+        return None
+    if isinstance(raw, (list, tuple)):
+        try:
+            nums = [float(v) for v in raw]
+            return nums if nums else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _xy(obj) -> Tuple[float, float]:
     if hasattr(obj, "x") and hasattr(obj, "y"):
         return float(obj.x), float(obj.y)
@@ -72,7 +100,7 @@ def extract_page(page, page_num: int, scale: float = 1.0,
         stroke = _norm_color(path_group.get("color") or path_group.get("stroke"))
         fill = _norm_color(path_group.get("fill"))
         width = path_group.get("width")
-        dashes = path_group.get("dashes")
+        dashes = _parse_dashes(path_group.get("dashes"))
         close_path = path_group.get("closePath", False)
         layer_name = path_group.get("oc") or path_group.get("layer")
 
