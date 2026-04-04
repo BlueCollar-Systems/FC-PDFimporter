@@ -1,0 +1,12 @@
+[tool.ruff]
+target-version = "py38"
+exclude = [
+    "dist",
+    "__pycache__",
+    ".ruff_cache",
+    "build_release.py",
+    "build_windows_installer.py",
+]
+
+[tool.ruff.lint]
+select = ["F", "B"]

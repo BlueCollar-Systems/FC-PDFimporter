@@ -60,6 +60,7 @@ class ImportConfig:
     make_faces: bool = True
     import_text: bool = True
     text_mode: str = "labels"               # "labels" | "geometry" | "none"
+    strict_text_fidelity: bool = True
     group_by_color: bool = True
     assign_linewidth: bool = True
     map_dashes: bool = True
@@ -161,6 +162,7 @@ class ImportConfig:
             make_faces=False,
             import_text=False,
             text_mode="none",
+            strict_text_fidelity=False,
             hatch_mode="skip",
             import_mode="auto",
             cleanup_level="conservative",
@@ -180,6 +182,7 @@ class ImportConfig:
             make_faces=True,
             import_text=True,
             text_mode="geometry",
+            strict_text_fidelity=True,
             hatch_mode="group",
             import_mode="auto",
             cleanup_level="balanced",
@@ -199,6 +202,7 @@ class ImportConfig:
             make_faces=True,
             import_text=True,
             text_mode="geometry",
+            strict_text_fidelity=True,
             hatch_mode="import",
             import_mode="auto",
             cleanup_level="aggressive",

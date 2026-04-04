@@ -125,16 +125,37 @@ def render_text(pdf_path: str, page_num: int, page_h: float,
         kw = {}
         if sys.platform == "win32":
             kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-        subprocess.run(
+
+        cmd_variants = [
+            # Preferred: crop to page crop box (best fidelity when supported).
             [exe, "-svg", "-cropbox", "-f", str(page_num), "-l", str(page_num),
              "--", pdf_path, svg_path],
-            check=True, timeout=90, capture_output=True, **kw)
+            # Compatibility fallback: some pdftocairo builds reject -cropbox with -svg.
+            [exe, "-svg", "-f", str(page_num), "-l", str(page_num),
+             "--", pdf_path, svg_path],
+        ]
+        last_err = None
+        for cmd in cmd_variants:
+            try:
+                if os.path.isfile(svg_path):
+                    os.remove(svg_path)
+                subprocess.run(cmd, check=True, timeout=90, capture_output=True, **kw)
+                if os.path.isfile(svg_path):
+                    with open(svg_path, "r", encoding="utf-8") as f:
+                        svg = f.read()
+                    if svg:
+                        break
+            except subprocess.TimeoutExpired:
+                # Timeout is unlikely to improve by retrying variants.
+                raise
+            except (subprocess.SubprocessError, OSError, ValueError, UnicodeError) as e:
+                last_err = e
+                continue
 
-        if not os.path.isfile(svg_path):
+        if not svg:
+            if last_err:
+                raise last_err
             return None
-
-        with open(svg_path, "r", encoding="utf-8") as f:
-            svg = f.read()
 
     except subprocess.TimeoutExpired:
         if FreeCAD:

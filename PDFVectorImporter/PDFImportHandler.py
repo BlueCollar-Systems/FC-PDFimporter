@@ -126,9 +126,8 @@ def _import_with_dialog(filename):
     # Pre-populate page count
     try:
         import fitz
-        doc = fitz.open(filename)
-        page_count = doc.page_count
-        doc.close()
+        with fitz.open(filename) as doc:
+            page_count = doc.page_count
         dlg._page_count = page_count
         dlg.page_edit.setPlaceholderText(
             f"1-{page_count}  (PDF has {page_count} pages)")
@@ -156,14 +155,23 @@ def _import_with_dialog(filename):
                 FreeCADGui.ActiveDocument.ActiveView.fitAll()
         except (ImportError, AttributeError, RuntimeError):
             pass
-    except (RuntimeError, ValueError, TypeError, OSError) as e:
+    except (RuntimeError, ValueError, TypeError, OSError, AttributeError, ImportError) as e:
         import traceback
         FreeCAD.Console.PrintError(f"Import failed: {e}\n{traceback.format_exc()}")
         try:
             from PySide6 import QtWidgets
         except ImportError:
             from PySide2 import QtWidgets
-        QtWidgets.QMessageBox.critical(None, "Import Failed", str(e))
+
+        # Provide targeted error messages for common failure modes
+        msg = str(e)
+        if "encrypt" in msg.lower():
+            title = "Encrypted PDF"
+        elif "fitz" in msg.lower() or "pymupdf" in msg.lower():
+            title = "PyMuPDF Error"
+        else:
+            title = "Import Failed"
+        QtWidgets.QMessageBox.critical(None, title, msg)
 
 
 def _import_headless(filename):
@@ -177,7 +185,7 @@ def _import_headless(filename):
     try:
         core.import_pdf(filename, opts)
         FreeCAD.Console.PrintMessage("PDF import complete.\n")
-    except (RuntimeError, ValueError, TypeError, OSError) as e:
+    except (RuntimeError, ValueError, TypeError, OSError, AttributeError, ImportError) as e:
         import traceback
         FreeCAD.Console.PrintError(f"Import failed: {e}\n{traceback.format_exc()}")
 

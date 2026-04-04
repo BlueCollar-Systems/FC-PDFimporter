@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# PDFPrimitiveExtractor.py — PyMuPDF → normalized Primitives
+# primitive_extractor.py — PyMuPDF -> normalized Primitives
 # BlueCollar Systems — BUILT. NOT BOUGHT.
 """
 THE SEAM: converts PyMuPDF page data into host-neutral Primitives.
@@ -10,7 +10,7 @@ import math
 import re
 from typing import List, Tuple
 
-from PDFPrimitives import (
+from .primitives import (
     Primitive, NormalizedText, PageData, next_id
 )
 
@@ -34,7 +34,6 @@ def _norm_color(col) -> Tuple[float, float, float]:
             return (g, g, g)
         vals = [max(0.0, min(1.0, float(c))) for c in col]
         if len(vals) >= 4:
-            # CMYK -> RGB conversion for print-oriented PDFs.
             c, m, y, k = vals[0], vals[1], vals[2], vals[3]
             r = (1.0 - c) * (1.0 - k)
             g = (1.0 - m) * (1.0 - k)
@@ -54,9 +53,6 @@ def _norm_color(col) -> Tuple[float, float, float]:
 def extract_page(page, page_num: int, scale: float = 1.0,
                  flip_y: bool = True) -> PageData:
     """Extract normalized primitives from a PyMuPDF page."""
-    # NOTE: Do NOT reset_ids() here — IDs must be unique across all pages
-    # in a multi-page import. reset_ids() is called once at import start.
-
     page_h = page.rect.height
     page_w_mm = page.rect.width * MM_PER_PT * scale
     page_h_mm = page.rect.height * MM_PER_PT * scale
@@ -76,7 +72,6 @@ def extract_page(page, page_num: int, scale: float = 1.0,
         close_path = path_group.get("closePath", False)
         layer_name = path_group.get("oc") or path_group.get("layer")
 
-        # Build point sequences per sub-path
         current_pts: List[Tuple[float, float]] = []
         sub_paths: List[Tuple[List[Tuple[float, float]], bool]] = []
 
@@ -114,7 +109,6 @@ def extract_page(page, page_num: int, scale: float = 1.0,
                     pts = [_xy(d) for d in data]
                 else:
                     pts = _parse_cubic(data)
-                # Linearize cubic Bézier
                 p0 = _to_mm(pts[0][0], pts[0][1], page_h, flip_y, scale)
                 p1 = _to_mm(pts[1][0], pts[1][1], page_h, flip_y, scale)
                 p2 = _to_mm(pts[2][0], pts[2][1], page_h, flip_y, scale)
@@ -161,7 +155,6 @@ def extract_page(page, page_num: int, scale: float = 1.0,
         for pts, is_closed in sub_paths:
             if len(pts) < 2:
                 continue
-            # Dedup consecutive
             cleaned = [pts[0]]
             for p in pts[1:]:
                 if _dist(p, cleaned[-1]) > 0.01:
@@ -187,7 +180,6 @@ def extract_page(page, page_num: int, scale: float = 1.0,
                 area=area, page_number=page_num
             ))
 
-    # Text extraction
     text_items = _extract_text(page, page_h, page_num, flip_y, scale)
 
     return PageData(
@@ -245,12 +237,10 @@ def _extract_text(page, page_h, page_num, flip_y, scale) -> List[NormalizedText]
 
 
 def _classify_generic(text: str) -> list:
-    """Domain-neutral text tags — domain-neutral."""
     tags = []
     t = text.strip()
     tu = t.upper()
-
-    if re.search(r"\d+['']\s*[-–]?\s*\d", t) or re.search(r"\d+\s*/\s*\d+", t):
+    if re.search(r"\d+['']\s*[-\u2013]?\s*\d", t) or re.search(r"\d+\s*/\s*\d+", t):
         tags.append("dimension_like")
     if re.search(r'\d+\.?\d*\s*(?:"|mm|cm|in|ft)', t, re.I):
         tags.append("dimension_like")
@@ -258,7 +248,7 @@ def _classify_generic(text: str) -> list:
         tags.append("scale_like")
     if re.search(r"\b(DRAWN|CHECKED|DATE|SCALE|REV|SHEET|PROJECT|DWG|TITLE)\b", tu):
         tags.append("titleblock_like")
-    if re.search(r"Ø|\bDIA\b|\bRAD\b|\bR\d", t, re.I):
+    if re.search(r"\u00D8|\bDIA\b|\bRAD\b|\bR\d", t, re.I):
         tags.append("callout_like")
     if re.search(r"\b(DETAIL|SECTION|SEC|VIEW|ELEVATION)\s+[A-Z]", tu):
         tags.append("detail_reference")

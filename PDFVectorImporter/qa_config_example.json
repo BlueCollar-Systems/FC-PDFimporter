@@ -8,6 +8,14 @@
     "freecad": {
       "command": "python adapters/freecad_adapter.py --config qa_config.json --test-id {test_id} --input \"{input}\"",
       "timeout_seconds": 300
+    },
+    "blender": {
+      "command": "python adapters/blender_adapter.py --config qa_config.json --test-id {test_id} --input \"{input}\"",
+      "timeout_seconds": 600
+    },
+    "librecad": {
+      "command": "python adapters/librecad_adapter.py --config qa_config.json --test-id {test_id} --input \"{input}\"",
+      "timeout_seconds": 600
     }
   },
   "sketchup": {
@@ -20,5 +28,15 @@
     "freecadcmd_exe": "C:/Program Files/FreeCAD 1.0/bin/FreeCADCmd.exe",
     "mod_dir": "%APPDATA%/FreeCAD/Mod/PDFVectorImporter",
     "python_harness": "adapters/freecad_harness.py"
+  },
+  "blender": {
+    "repo_dir": "C:/1BL-PDFimporter",
+    "python_exe": "python",
+    "timeout_seconds": 600
+  },
+  "librecad": {
+    "repo_dir": "C:/1LC-PDFimporter",
+    "python_exe": "python",
+    "timeout_seconds": 600
   }
 }

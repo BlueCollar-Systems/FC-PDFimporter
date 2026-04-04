@@ -1,7 +1,7 @@
 # PDF Vector Importer for FreeCAD
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Version: 3.5.0](https://img.shields.io/badge/Version-3.5.0-green.svg)
+![Version: 3.6.6](https://img.shields.io/badge/Version-3.6.6-green.svg)
 ![Platform: FreeCAD 0.21+](https://img.shields.io/badge/Platform-FreeCAD%200.21%2B-orange.svg)
 
 **Import vector geometry, text, and images from PDF files into FreeCAD as editable Part objects.**
@@ -100,6 +100,8 @@ The test harness supports multiple target platforms through an adapter pattern:
 |---|---|---|
 | **FreeCAD** | FreeCAD 0.21+ | Full integration tests against live FreeCAD |
 | **SketchUp** | SketchUp | Cross-platform validation via SketchUp adapter |
+| **Blender** | Blender 3.6+ | Headless CLI validation via Blender importer adapter |
+| **LibreCAD** | LibreCAD (DXF flow) | PDF-to-DXF validation via LibreCAD adapter |
 
 **Test artifacts:**
 - `qa_config_*.json` -- test suite configuration files
@@ -116,6 +118,22 @@ Run a smoke test:
 
 ```bash
 python run_pdf_vector_importer_tests.py --workbook path/to/your_workbook.xlsx --config qa_config_local_smoke.json
+```
+
+Run platform-specific smoke tests:
+
+```bash
+python run_pdf_vector_importer_tests.py --workbook qa_workbook.xlsx --config qa_config.json --platform BL --automation AUTO
+python run_pdf_vector_importer_tests.py --workbook qa_workbook.xlsx --config qa_config.json --platform LC --automation AUTO
+```
+
+Workbook platform sheet names are:
+`SketchUp Tests`, `FreeCAD Tests`, `Blender Tests`, and `LibreCAD Tests`.
+
+Bootstrap a starter workbook on a fresh clone:
+
+```bash
+python run_pdf_vector_importer_tests.py --init-workbook qa_workbook.xlsx
 ```
 
 ---

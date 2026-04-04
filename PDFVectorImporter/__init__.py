@@ -13,7 +13,7 @@ except NameError:
 _src = os.path.join(_base, "src")
 _lib = os.path.join(_src, "lib")
 
-for _p in (_src, _lib):
+for _p in (_base, _src, _lib):
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
 

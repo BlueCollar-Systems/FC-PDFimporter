@@ -18,7 +18,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Set
 
 
 def resolve_path(value: Optional[str], base_dir: Optional[str] = None) -> Optional[str]:
@@ -47,7 +47,7 @@ def parse_pages(spec: Optional[str], pdf_path: str):
         except (ImportError, OSError, RuntimeError):
             return [1]
 
-    pages: set[int] = set()
+    pages: Set[int] = set()
     for part in [p.strip() for p in s.replace(";", ",").split(",") if p.strip()]:
         if "-" in part:
             a, b = [x.strip() for x in part.split("-", 1)]
@@ -66,13 +66,13 @@ def parse_pages(spec: Optional[str], pdf_path: str):
 def preset_to_opts(preset_name: str):
     # Mirrors defaults used by the FreeCAD UI command.
     presets = {
-        "Fast Preview": dict(curve_step=2.0, join_tol=0.5, detect_arcs=False, map_dashes=False, make_faces=False, text="No text", hatch_mode="skip"),
-        "General Vector": dict(curve_step=1.0, join_tol=0.2, detect_arcs=False, map_dashes=False, make_faces=True, text="Labels", hatch_mode="import"),
-        "Technical Drawing": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Labels", hatch_mode="group"),
-        "Shop Drawing": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group"),
-        "Max Fidelity": dict(curve_step=0.2, join_tol=0.05, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="import"),
+        "Fast Preview": dict(curve_step=2.0, join_tol=0.5, detect_arcs=False, map_dashes=False, make_faces=False, text="No text", hatch_mode="skip", strict_text_fidelity=False),
+        "General Vector": dict(curve_step=1.0, join_tol=0.2, detect_arcs=False, map_dashes=False, make_faces=True, text="Geometry", hatch_mode="import", strict_text_fidelity=True),
+        "Technical Drawing": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group", strict_text_fidelity=True),
+        "Shop Drawing": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group", strict_text_fidelity=True),
+        "Max Fidelity": dict(curve_step=0.2, join_tol=0.05, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="import", strict_text_fidelity=True),
         # Cross-host alias used by SketchUp side:
-        "Full": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group"),
+        "Full": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group", strict_text_fidelity=True),
     }
     return presets.get(preset_name or "", presets["Shop Drawing"])
 
@@ -120,8 +120,8 @@ def _looks_like_python(path_or_name: str) -> bool:
     return name.startswith("python") or name in ("py", "py.exe")
 
 
-def _candidate_python_interpreters() -> list[str]:
-    candidates: list[str] = []
+def _candidate_python_interpreters() -> List[str]:
+    candidates: List[str] = []
 
     env_py = os.environ.get("BC_PDF_QA_PYTHON", "").strip()
     if env_py:
@@ -146,7 +146,7 @@ def _candidate_python_interpreters() -> list[str]:
         if found:
             candidates.append(found)
 
-    out: list[str] = []
+    out: List[str] = []
     seen = set()
     for c in candidates:
         if not c:
@@ -159,7 +159,7 @@ def _candidate_python_interpreters() -> list[str]:
     return out
 
 
-def _run_cmd(cmd: list[str], timeout_s: int = 300) -> dict:
+def _run_cmd(cmd: List[str], timeout_s: int = 300) -> dict:
     kwargs = {
         "capture_output": True,
         "text": True,
@@ -364,6 +364,7 @@ def main() -> int:
             make_faces=bool(preset["make_faces"]),
             import_text=import_text,
             text_mode=text_mode,
+            strict_text_fidelity=bool(preset.get("strict_text_fidelity", True)),
             hatch_mode=str(preset["hatch_mode"]),
             group_by_color=True,
             assign_linewidth=True,

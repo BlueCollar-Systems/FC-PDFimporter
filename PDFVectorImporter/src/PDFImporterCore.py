@@ -376,6 +376,9 @@ class ImportOptions:
     make_faces: bool = True                 # close filled paths → Part::Face
     import_text: bool = True
     text_mode: str = "labels"             # "labels" | "geometry" | "none"
+    # When enabled, disables text reconstruction and uses glyph-accurate
+    # placement paths only (pdftocairo geometry or exact per-span labels).
+    strict_text_fidelity: bool = True
     group_by_color: bool = True
     assign_linewidth: bool = True
     map_dashes: bool = True
@@ -873,7 +876,9 @@ def _polyline_edges_to_arcs(edges: List, opts: ImportOptions) -> List:
 # Text fraction reconstruction
 # ──────────────────────────────────────────────────────────────────────
 # Common denominators in structural/architectural drawings
-_VALID_DENOMS = {2, 4, 8, 16, 32, 64, 3, 6, 12}
+# Engineering drawing inch fractions are overwhelmingly base-2 denominators.
+# Keeping this strict avoids false positives like "206" -> "2/06" for part IDs.
+_VALID_DENOMS = {2, 4, 8, 16, 32, 64}
 
 
 def _try_split_fraction(text: str) -> Optional[Tuple[str, str]]:
@@ -941,9 +946,16 @@ def _reconstruct_line_text(spans: list) -> str:
                 return frac[0] + "/" + frac[1]
         return text
 
-    # Find the dominant (largest) font size in this line
+    # Find the dominant non-slash font size in this line. In many CAD PDFs the
+    # fraction slash is rendered slightly larger than nearby digits; using it as
+    # the reference causes mixed-fraction detection to miss common patterns.
+    non_slash_sizes = [
+        float(s.get("size", 0))
+        for s in spans
+        if not _is_fraction_slash(s)
+    ]
     sizes = [float(s.get("size", 0)) for s in spans]
-    main_size = max(sizes) if sizes else 10.0
+    main_size = max(non_slash_sizes) if non_slash_sizes else (max(sizes) if sizes else 10.0)
 
     result = []
     i = 0
@@ -1059,6 +1071,37 @@ def _reconstruct_line_text(spans: list) -> str:
                     except ValueError:
                         pass
 
+        # Case D: compact fraction digits followed by trailing slash
+        # e.g. ('34') + ('/') → "3/4"
+        if text.isdigit() and len(text) >= 2 and i + 1 < len(spans):
+            next_span = spans[i + 1]
+            if _is_fraction_slash(next_span):
+                frac = _try_split_fraction(text)
+                if frac:
+                    _append_frac(frac[0] + "/" + frac[1])
+                    i += 2
+                    continue
+
+        # Case E: mixed fraction where slash trails the compact frac span
+        # e.g. ('2') + ('12') + ('/') → "2 1/2"
+        # e.g. ("37'-10") + ('12') + ('/') → "37'-10 1/2"
+        if i + 2 < len(spans):
+            next_span = spans[i + 1]
+            slash_span = spans[i + 2]
+            next_text = next_span.get("text", "")
+            if (
+                next_text.isdigit()
+                and len(next_text) >= 2
+                and _is_fraction_slash(slash_span)
+                and _is_smaller_font(next_span, main_size)
+            ):
+                frac = _try_split_fraction(next_text)
+                if frac:
+                    result.append(text)
+                    _append_frac(frac[0] + "/" + frac[1])
+                    i += 3
+                    continue
+
         # Default: just append the text
         result.append(text)
         i += 1
@@ -1139,6 +1182,211 @@ def _effective_descender(text: str, font_descender: float) -> float:
     return font_descender * 0.08
 
 
+def _normalize_pdf_font_name(font_name: str) -> str:
+    """Normalize PDF font names to practical system font family names.
+
+    PDF fonts often arrive as subset names like "ABCDEE+Helvetica-Bold".
+    Draft accepts family names more reliably than subset/raw PDF names.
+    """
+    raw = str(font_name or "").strip()
+    if not raw:
+        return ""
+
+    if "+" in raw:
+        prefix, rest = raw.split("+", 1)
+        if len(prefix) == 6 and prefix.isupper():
+            raw = rest.strip()
+
+    low = raw.lower()
+    if "helvetica" in low or "arial" in low:
+        family = "Arial"
+    elif "times" in low:
+        family = "Times New Roman"
+    elif "courier" in low:
+        family = "Courier New"
+    elif "calibri" in low:
+        family = "Calibri"
+    else:
+        return raw
+
+    is_bold = bool(re.search(r"\bbold\b|\bbd\b", low))
+    is_italic = bool(re.search(r"\bitalic\b|\boblique\b|\bit\b", low))
+    if is_bold and is_italic:
+        return f"{family} Bold Italic"
+    if is_bold:
+        return f"{family} Bold"
+    if is_italic:
+        return f"{family} Italic"
+    return family
+
+
+def _line_angle_deg(line: dict) -> float:
+    text_dir = line.get("dir", (1.0, 0.0))
+    if text_dir and len(text_dir) >= 2:
+        try:
+            dx, dy = float(text_dir[0]), float(text_dir[1])
+            return -math.degrees(math.atan2(dy, dx))
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+def _normalize_text_angle_deg(angle_deg: float) -> float:
+    """Normalize to [-90, 90] for orientation tests."""
+    a = float(angle_deg) % 180.0
+    if a > 90.0:
+        a -= 180.0
+    return a
+
+
+def _rotated_text_threshold_deg(default: float = 12.0) -> float:
+    """Shared threshold for routing rotated/diagonal labels."""
+    raw = os.environ.get("BC_PDF_ROTATED_LABEL_DEG", "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if 0.0 <= val <= 89.0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return float(default)
+
+
+def _apply_text_local_y_offset(pos: "Vector", angle_deg: float, offset_fc: float) -> "Vector":
+    """Apply baseline->bbox offset in the text's local +Y axis (rotation aware)."""
+    if abs(float(offset_fc)) <= 1e-12:
+        return pos
+    a = math.radians(float(angle_deg))
+    dx = -math.sin(a) * float(offset_fc)
+    dy = math.cos(a) * float(offset_fc)
+    try:
+        pos.x += dx
+        pos.y += dy
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return pos
+
+
+def _span_origin_pdf(span: dict) -> Optional[Tuple[float, float]]:
+    """Return a best-effort PDF-space baseline origin for one span."""
+    o = span.get("origin")
+    if o and len(o) >= 2:
+        try:
+            return float(o[0]), float(o[1])
+        except (TypeError, ValueError):
+            pass
+
+    bbox = span.get("bbox")
+    if bbox and len(bbox) >= 4:
+        try:
+            x0, _y0, _x1, y1 = [float(v) for v in bbox[:4]]
+            size_pt = max(0.0, float(span.get("size", 0.0) or 0.0))
+            desc = abs(float(span.get("descender", -0.2) or -0.2))
+            return x0, (y1 - desc * size_pt)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _render_text_spans_exact_labels(
+    tdict: dict,
+    text_group,
+    page_h: float,
+    opts: ImportOptions,
+    scale: float,
+    only_rotated: bool = False,
+) -> int:
+    """Render one Draft text object per PDF span for highest label fidelity."""
+    if Draft is None or text_group is None:
+        return 0
+
+    count = 0
+    # Per-text placement registry to suppress near-identical duplicate spans
+    # (common in some PDFs with layered text paints), while preserving
+    # genuinely distinct nearby labels.
+    seen = {}
+    rotated_threshold = _rotated_text_threshold_deg()
+    for block in tdict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = line.get("spans", []) or []
+            if not spans:
+                continue
+            angle_deg = _line_angle_deg(line)
+            norm_angle = _normalize_text_angle_deg(angle_deg)
+            if only_rotated and abs(norm_angle) < rotated_threshold:
+                continue
+            rot = Rotation(Vector(0, 0, 1), angle_deg)
+
+            for span in spans:
+                text = span.get("text", "")
+                if not text or text.isspace():
+                    continue
+                origin = _span_origin_pdf(span)
+                if not origin:
+                    continue
+
+                try:
+                    size_pt = float(span.get("size", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    size_pt = 0.0
+                font_size_fc = max(0.1, (size_pt if size_pt > 0.0 else 3.0) * scale)
+                txt = str(text).strip()
+                if not txt:
+                    continue
+
+                dedupe_key = (
+                    txt,
+                    round(float(norm_angle), 1),
+                    round(float(font_size_fc), 2),
+                )
+                bucket = seen.setdefault(dedupe_key, [])
+                is_duplicate = False
+                ox = float(origin[0])
+                oy = float(origin[1])
+                for px, py in bucket:
+                    # Tight tolerance: only collapse effectively overlaid spans.
+                    if abs(ox - px) <= 0.35 and abs(oy - py) <= 0.35:
+                        is_duplicate = True
+                        break
+                if is_duplicate:
+                    continue
+                bucket.append((ox, oy))
+
+                pos = _to_fc(origin, page_h, opts, scale)
+                font_name = _normalize_pdf_font_name(span.get("font", ""))
+                # Draft text anchoring differs slightly from PDF span origins for
+                # rotated labels; apply a conservative local-Y nudge only for
+                # clearly non-horizontal text to improve vertical/diagonal fit.
+                if abs(norm_angle) >= rotated_threshold:
+                    try:
+                        desc = float(span.get("descender", -0.2) or -0.2)
+                    except (TypeError, ValueError):
+                        desc = -0.2
+                    offset_fc = _effective_descender(txt, desc) * font_size_fc * 0.35
+                    pos = _apply_text_local_y_offset(pos, angle_deg, offset_fc)
+                try:
+                    t = Draft.make_text([text], placement=Placement(pos, rot))
+                except (RuntimeError, ValueError, TypeError, AttributeError):
+                    continue
+
+                try:
+                    t.ViewObject.FontSize = font_size_fc
+                    if font_name:
+                        t.ViewObject.FontName = font_name
+                    t.ViewObject.Justification = "Left"
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    pass
+
+                try:
+                    text_group.addObject(t)
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    pass
+                count += 1
+    return count
+
+
 def _is_near_horizontal(dx: float, dy: float) -> bool:
     return abs(dx) > 0.95 and abs(dy) < 0.10
 
@@ -1195,11 +1443,16 @@ def _preprocess_text_blocks(tdict: dict) -> dict:
     return tdict
 
 
-def _resolve_horizontal_run_overlaps(layout_items: List[dict]) -> List[dict]:
-    """Push later horizontal sibling runs right only when reconstructed width
-    would overlap the previous run on the same baseline."""
+def _resolve_horizontal_run_overlaps(layout_items: List[dict], scale: float) -> List[dict]:
+    """Push later horizontal sibling runs right only when they truly overlap.
+
+    Uses the measured PDF bbox width when available and only falls back to
+    estimated render width when needed. This avoids false-positive nudges that
+    can misalign callouts in technical drawings.
+    """
     if not layout_items:
         return layout_items
+    s = max(scale, 1e-12)
     # IMPORTANT: tiny baseline jitter (e.g. 334.560 vs 334.562) can invert run
     # order when sorting primarily by baseline. Preserve left-to-right order
     # within each logical text line using a coarse line key when available.
@@ -1218,11 +1471,19 @@ def _resolve_horizontal_run_overlaps(layout_items: List[dict]) -> List[dict]:
         if not _same_text_line(item["baseline_y_pdf"], prev["baseline_y_pdf"], item["font_size_fc"], prev["font_size_fc"]):
             prev = item
             continue
-        prev_right = prev["x_pdf"] + max(prev["orig_width_pdf"], prev["render_width_pdf"])
+        prev_width = float(prev.get("orig_width_pdf", 0.0) or 0.0)
+        if prev_width <= 1e-6:
+            prev_width = float(prev.get("render_width_pdf", 0.0) or 0.0)
+        prev_right = float(prev["x_pdf"]) + prev_width
         this_left = item["x_pdf"]
-        pad = 0.18 * max(prev["font_size_fc"], item["font_size_fc"], 1.0)
-        if prev_right + pad > this_left:
-            item["x_pdf"] += (prev_right + pad) - this_left
+        overlap = prev_right - float(this_left)
+        if overlap > 0.0:
+            # Keep a tiny separation in PDF-space units.
+            pad_pdf = min(
+                0.75,
+                (0.04 * max(prev["font_size_fc"], item["font_size_fc"], 1.0)) / s,
+            )
+            item["x_pdf"] += overlap + pad_pdf
         prev = item
     return items
 
@@ -1422,8 +1683,15 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         raise ValueError(f"Cannot read PDF file: {e}") from e
 
     pdf_doc = fitz.open(pdf_path)
-    if pdf_doc.is_encrypted:
+    try:
+        return _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc)
+    finally:
         pdf_doc.close()
+
+
+def _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc):
+    """Inner implementation — pdf_doc is guaranteed to be closed by caller."""
+    if pdf_doc.is_encrypted:
         raise ValueError(
             "This PDF is encrypted and cannot be imported. "
             "Please remove the encryption (e.g., print to a new PDF) and try again.")
@@ -1638,7 +1906,6 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
     if _progress_check_cancel():
         if progress:
             progress.close()
-        pdf_doc.close()
         fc_doc.recompute()
         return top_group
 
@@ -1652,7 +1919,6 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         if progress:
             progress.setValue(100)
             progress.close()
-        pdf_doc.close()
         fc_doc.recompute()
         _msg(f"Page {page_num}: imported as raster image")
         return top_group
@@ -1681,7 +1947,6 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
             if progress:
                 progress.setValue(100)
                 progress.close()
-            pdf_doc.close()
             fc_doc.recompute()
             _msg(f"Page {page_num}: imported as raster image")
             return top_group
@@ -1825,7 +2090,6 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                 if _batch_size:
                     _flush_batch(force=True)
                 progress.close()
-                pdf_doc.close()
                 fc_doc.recompute()
                 return top_group
 
@@ -2097,7 +2361,6 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                         80 + int(5 * _flush_idx / max(n_style_keys, 1)),
                         f"Building compound {_flush_idx}/{n_style_keys}...")
                 if _progress_check_cancel():
-                    pdf_doc.close()
                     fc_doc.recompute()
                     return top_group
                 _flush_batch(_fk, force=True)
@@ -2111,7 +2374,6 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         _progress_update(86, "Importing text...")
 
         if _progress_check_cancel():
-            pdf_doc.close()
             fc_doc.recompute()
             return top_group
 
@@ -2141,8 +2403,47 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         # Fall back to Draft text (Labels mode, or if pdftocairo unavailable)
         if not svg_text_done:
           try:
-            tdict = page.get_text("dict")
+            tdict = _preprocess_text_blocks(page.get_text("dict"))
             text_group = _make_group(top_group or fc_doc, "Text", fc_doc)
+
+            # High-fidelity Labels path: render each PDF span at its exact origin.
+            # This preserves stacked fractions and micro-positioning much closer
+            # to the source PDF than reconstructed line text.
+            prefer_exact_labels = bool(getattr(opts, "strict_text_fidelity", True))
+            _env_exact = os.environ.get("BC_PDF_EXACT_LABELS", "").strip().lower()
+            if _env_exact:
+                prefer_exact_labels = _env_exact not in ("0", "false", "off", "no")
+            exact_span_count = 0
+            if prefer_exact_labels:
+                exact_span_count = _render_text_spans_exact_labels(
+                    tdict, text_group, page_h, opts, scale
+                )
+                if exact_span_count > 0:
+                    obj_count += exact_span_count
+                    _progress_update(
+                        89,
+                        f"Rendering text labels ({exact_span_count} spans)...")
+                    if opts.verbose:
+                        _msg(f"  Text: {exact_span_count} span labels (exact placement)")
+                elif opts.verbose:
+                    _warn("Strict text fidelity enabled, but exact span labels produced 0 items.")
+                # In strict mode, never run legacy line reconstruction.
+                tdict["blocks"] = []
+            else:
+                # Route rotated text through exact span placement even when
+                # strict mode is off. Legacy reconstruction remains for
+                # horizontal text only.
+                prefer_rotated_exact = True
+                _env_rot = os.environ.get("BC_PDF_ROTATED_EXACT_LABELS", "").strip().lower()
+                if _env_rot:
+                    prefer_rotated_exact = _env_rot not in ("0", "false", "off", "no")
+                if prefer_rotated_exact:
+                    rotated_span_count = _render_text_spans_exact_labels(
+                        tdict, text_group, page_h, opts, scale, only_rotated=True
+                    )
+                    if rotated_span_count > 0 and opts.verbose:
+                        _msg(f"  Text: {rotated_span_count} rotated span labels (exact placement)")
+                    obj_count += rotated_span_count
 
             for block in tdict.get("blocks", []):
                 if block.get("type") != 0:
@@ -2153,6 +2454,16 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                 # or "/").  This prevents BOM table cells from merging while still
                 # recombining split fractions with their main dimension text.
                 block_lines = block.get("lines", [])
+                if not prefer_exact_labels:
+                    horizontal_lines = []
+                    rotated_threshold = _rotated_text_threshold_deg()
+                    for _ln in block_lines:
+                        _ang = _line_angle_deg(_ln)
+                        # Keep legacy reconstruction for horizontal-ish lines.
+                        # Rotated/diagonal lines are handled via exact spans above.
+                        if abs(_normalize_text_angle_deg(_ang)) < rotated_threshold:
+                            horizontal_lines.append(_ln)
+                    block_lines = horizontal_lines
                 y_groups: List[List] = []
 
                 def _is_frac_fragment(ln, main_sz=0) -> bool:
@@ -2285,12 +2596,14 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                         # label drift in title blocks.
                         drift = abs(baseline_from_origin - baseline_from_bbox)
                         drift_tol = max(0.9, size_pt * 0.28)
+                        baseline_from_origin_used = drift <= drift_tol
                         baseline_y = (
                             baseline_from_bbox
                             if drift > drift_tol
                             else baseline_from_origin
                         )
                     else:
+                        baseline_from_origin_used = False
                         baseline_y = baseline_from_bbox
 
                     text_dir = grp[0].get("dir", (1.0, 0.0))
@@ -2314,10 +2627,20 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                     else:
                         # Left-anchored rows should start from the true left-most
                         # text origin, not whichever span happened to come first.
-                        x_pdf = min((p[0] for p in origin_xy), default=all_x0)
+                        if (not is_horizontal) and origin_xy and baseline_from_origin_used:
+                            dlen = math.hypot(dx, dy)
+                            if dlen <= 1e-12:
+                                ux, uy = 1.0, 0.0
+                            else:
+                                ux, uy = dx / dlen, dy / dlen
+                            anchor = min(origin_xy, key=lambda p: (p[0] * ux + p[1] * uy))
+                            x_pdf = float(anchor[0])
+                            baseline_y = float(anchor[1])
+                        else:
+                            x_pdf = min((p[0] for p in origin_xy), default=all_x0)
                         justification = "Left"
 
-                    font = str(all_spans[0].get("font", ""))
+                    font = _normalize_pdf_font_name(all_spans[0].get("font", ""))
                     # Grab PyMuPDF normalised font metrics for baseline offset
                     _asc = float(all_spans[0].get("ascender", 0.8))
                     _desc = float(all_spans[0].get("descender", -0.2))
@@ -2337,7 +2660,7 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                         "angle_deg": angle_deg,
                         "is_horizontal": is_horizontal,
                         "baseline_y_pdf": baseline_y,
-                        "baseline_is_origin": bool(origin_xy and baseline_y != baseline_from_bbox),
+                        "baseline_is_origin": bool(origin_xy and baseline_from_origin_used),
                         "x_pdf": x_pdf,
                         "orig_width_pdf": orig_width_pdf,
                         "render_width_pdf": render_width_pdf,
@@ -2348,7 +2671,7 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                         "descender": _desc,
                     })
 
-                layout_items = _resolve_horizontal_run_overlaps(layout_items)
+                layout_items = _resolve_horizontal_run_overlaps(layout_items, scale)
                 layout_items = _apply_vertical_mixed_fraction_compaction(layout_items, scale)
 
                 for item in layout_items:
@@ -2364,7 +2687,11 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
                             item["content"],
                             float(item.get("descender", -0.2)),
                         )
-                        pos.y += _d * item["font_size_fc"]
+                        pos = _apply_text_local_y_offset(
+                            pos,
+                            float(item.get("angle_deg", 0.0)),
+                            _d * float(item["font_size_fc"]),
+                        )
                     try:
                         rot = Rotation(Vector(0, 0, 1), item["angle_deg"])
                         t = Draft.make_text([item["content"]], placement=Placement(pos, rot))
@@ -2533,7 +2860,6 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
         progress.setValue(100)
         progress.close()
 
-    pdf_doc.close()
     fc_doc.recompute()
     elapsed_total = time.time() - _import_start
     _msg(f"Page {page_num}: {obj_count} objects created in {elapsed_total:.1f}s")
