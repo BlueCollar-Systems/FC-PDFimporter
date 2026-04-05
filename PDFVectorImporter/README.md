@@ -1,7 +1,7 @@
 # PDF Vector Importer for FreeCAD
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Version: 3.6.6](https://img.shields.io/badge/Version-3.6.6-green.svg)
+![Version: 4.0.2](https://img.shields.io/badge/Version-4.0.2-green.svg)
 ![Platform: FreeCAD 0.21+](https://img.shields.io/badge/Platform-FreeCAD%200.21%2B-orange.svg)
 
 **Import vector geometry, text, and images from PDF files into FreeCAD as editable Part objects.**
@@ -46,7 +46,7 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 
 2. Restart FreeCAD.
 3. Switch to the **PDF Vector Importer** workbench from the workbench selector.
-4. PyMuPDF installs automatically on first use (requires pip / internet).
+4. PyMuPDF (`>=1.24,<2.0`) installs automatically on first use (requires pip / internet).
 
 ---
 
@@ -55,7 +55,7 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 | Dependency | Required | Notes |
 |---|---|---|
 | **FreeCAD** | 0.21+ | Tested through 1.0 |
-| **PyMuPDF** | Yes | Auto-installed on first run |
+| **PyMuPDF** | Yes | Auto-installed on first run (`>=1.24,<2.0`) |
 | **pdftocairo** | Optional | Required only for text-as-geometry import |
 
 ---

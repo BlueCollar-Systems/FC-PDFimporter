@@ -13,6 +13,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  context-hash-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify repo_context_builder_core.py hash
+        run: |
+          EXPECTED_SHA="8fe18c896c63372b5c2d7c17c383b548e9573c9b7592019cd72159f2b08505de"
+          test -f repo_context_builder_core.py || { echo "ERROR: repo_context_builder_core.py missing"; exit 1; }
+          ACTUAL_SHA=$(sha256sum repo_context_builder_core.py | awk '{print $1}')
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "ERROR: repo_context_builder_core.py hash mismatch"
+            echo "expected=$EXPECTED_SHA"
+            echo "actual=$ACTUAL_SHA"
+            exit 1
+          fi
+
+  sketchup-harness-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler-cache: false
+
+      - name: Check Ruby harness syntax
+        run: ruby -c PDFVectorImporter/adapters/sketchup_harness.rb
+
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check package/readme version consistency
+        run: |
+          PKG_VER=$(grep -oP '(?<=<version>)[^<]+' PDFVectorImporter/package.xml | head -n1)
+          ROOT_README_VER=$(grep -oP 'Version-\K[0-9.]+' README.md | head -n1)
+          MOD_README_VER=$(grep -oP 'Version-\K[0-9.]+' PDFVectorImporter/README.md | head -n1)
+          if [ -z "$PKG_VER" ] || [ -z "$ROOT_README_VER" ] || [ -z "$MOD_README_VER" ]; then
+            echo "ERROR: Could not read version(s): package=$PKG_VER root=$ROOT_README_VER module=$MOD_README_VER"
+            exit 1
+          fi
+          if [ "$PKG_VER" != "$ROOT_README_VER" ] || [ "$PKG_VER" != "$MOD_README_VER" ]; then
+            echo "ERROR: Version mismatch package=$PKG_VER root=$ROOT_README_VER module=$MOD_README_VER"
+            exit 1
+          fi
+
   syntax-check:
     runs-on: ubuntu-latest
     strategy:
