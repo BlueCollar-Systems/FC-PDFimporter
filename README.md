@@ -52,7 +52,7 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
    - **Linux:** `~/.local/share/FreeCAD/Mod/`
 3. Install PyMuPDF:
    ```bash
-   pip install PyMuPDF
+   pip install "PyMuPDF>=1.24,<2.0"
    ```
 4. Restart FreeCAD
 
@@ -96,11 +96,39 @@ python build_release.py
 | **Shop Drawing** | Fabrication shop drawings with steel shapes | Medium |
 | **Max Fidelity** | Maximum accuracy, all features enabled | Slower |
 
+## Compatibility
+
+| FreeCAD Version | Python | PyMuPDF | Status |
+|----------------|--------|---------|--------|
+| 0.21.x | 3.10+ | >=1.24,<2.0 | ⚠️ Expected |
+| 1.0.x | 3.11+ | >=1.24,<2.0 | ⚠️ Expected |
+| 1.1.x | 3.11+ | >=1.24,<2.0 | ⚠️ Expected |
+| 0.19–0.20 | 3.8–3.9 | legacy pin | ⚠️ Expected only after legacy branch testing |
+| 0.18 and earlier | | | ❌ Not supported |
+
+Evidence levels:
+- `✅ Verified`: host-run validation evidence captured.
+- `⚠️ Expected`: syntax/runtime compatible but no host-run evidence yet.
+- `❌ Not supported`: outside maintained/tested compatibility scope.
+
 ## Requirements
 
 - **FreeCAD** 0.21 or later
 - **Python** 3.10+ (adapters use PEP 604 union types)
 - **PyMuPDF** (automatically installed via Addon Manager)
+
+## Known Limitations
+
+| Limitation | Details |
+|-----------|---------|
+| Encrypted PDFs | Password-protected PDFs must be unlocked before import |
+| Compression filters | Decoding is delegated to PyMuPDF. Malformed or non-standard compressed object streams may fail to parse |
+| Raster-only scans | Pure raster PDFs produce no vector geometry |
+| Clipped/XObject-heavy PDFs | Complex clip stacks and deeply nested form XObjects can produce partial geometry |
+| Very large PDFs | Documents with >10,000 primitives may slow the import process |
+| Embedded subset fonts | Text using embedded subset fonts may not render correctly |
+| OCG layer assignment | Extractor-level OCG mapping is validated on corpus `layered_ocg.pdf`; FreeCAD host-run grouping verification is still required in target runtime |
+| Legacy hosts | FreeCAD versions older than 0.21 are not part of current validation coverage |
 
 ## License
 

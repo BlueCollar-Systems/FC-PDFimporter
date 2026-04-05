@@ -24,7 +24,10 @@ _lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
 if _lib_dir not in sys.path:
     sys.path.insert(0, _lib_dir)
 
-import fitz  # PyMuPDF
+try:
+    import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
+except ImportError:
+    import fitz  # Legacy fallback
 
 # FreeCAD modules — lazy import for IDE friendliness outside FreeCAD
 try:
@@ -282,42 +285,56 @@ def _as_float_list(seq) -> List[float]:
     return out
 
 
-def _parse_dashes(val) -> List[float]:
+def _parse_dashes(val) -> Tuple[List[float], float]:
     """Parse a dash pattern from PyMuPDF which may be:
     - A string like '[ 6 6 ] 0'  (bracket-delimited, with trailing phase)
     - A list of floats [6.0, 6.0]
     - None or empty
-    Returns a list of float dash lengths (no phase value)."""
+    Returns a (dash_array, phase) tuple.  Empty list means solid."""
     if val is None:
-        return []
+        return [], 0.0
     if isinstance(val, str):
-        # Extract numbers from between brackets: "[ 6 6 ] 0" → [6.0, 6.0]
+        # Extract numbers from between brackets: "[ 6 6 ] 0" -> [6.0, 6.0]
         bracket_match = re.search(r'\[([^\]]*)\]', val)
         if bracket_match:
             inner = bracket_match.group(1).strip()
             if not inner:
-                return []  # empty brackets = solid
+                return [], 0.0  # empty brackets = solid
             nums = []
             for part in inner.split():
                 try:
                     nums.append(float(part))
                 except ValueError:
                     pass
-            return nums
-        # No brackets — try splitting as space-separated numbers
+            # Extract phase after closing bracket
+            phase = 0.0
+            after = val[bracket_match.end():].strip()
+            if after:
+                try:
+                    phase = float(after)
+                except ValueError:
+                    pass
+            return nums, phase
+        # No brackets -- try splitting as space-separated numbers
         nums = []
         for part in val.split():
             try:
                 nums.append(float(part))
             except ValueError:
                 pass
-        return nums
+        return nums, 0.0
     # Handle nested tuple/list: ([dash_array], phase) from newer PyMuPDF
     if isinstance(val, (tuple, list)) and len(val) >= 1:
         if isinstance(val[0], (tuple, list)):
-            return _as_float_list(val[0])
+            phase = 0.0
+            if len(val) >= 2:
+                try:
+                    phase = float(val[1])
+                except (TypeError, ValueError):
+                    pass
+            return _as_float_list(val[0]), phase
     # Already a flat list/tuple
-    return _as_float_list(val)
+    return _as_float_list(val), 0.0
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2108,7 +2125,7 @@ def _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc):
         fill = path_group.get("fill")
         close_path = path_group.get("closePath", False)
         width = _as_float(path_group.get("width") or path_group.get("lineWidth"))
-        dashes = _parse_dashes(path_group.get("dashes"))
+        dashes, _dash_phase = _parse_dashes(path_group.get("dashes"))
         layer_name = path_group.get("oc") or path_group.get("layer")
 
         # ── Skip invisible / clipping paths ──

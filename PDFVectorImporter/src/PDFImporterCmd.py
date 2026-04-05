@@ -11,9 +11,12 @@ if _lib_dir not in sys.path:
     sys.path.insert(0, _lib_dir)
 
 try:
-    import fitz
+    import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
 except ImportError:
-    fitz = None
+    try:
+        import fitz  # Legacy fallback
+    except ImportError:
+        fitz = None
 
 try:
     from PySide6 import QtWidgets
@@ -513,7 +516,10 @@ class ImportPDFVectorCommand:
     def Activated(self):
         # Re-check for fitz each time (may have been installed mid-session)
         try:
-            import fitz  # noqa: F811, F401
+            try:
+                import pymupdf as fitz  # noqa: F811, F401  # PyMuPDF >= 1.24 preferred name
+            except ImportError:
+                import fitz  # noqa: F811, F401  # Legacy fallback
         except ImportError:
             QtWidgets.QMessageBox.warning(
                 None, "PyMuPDF Not Found",

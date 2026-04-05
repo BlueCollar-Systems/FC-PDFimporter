@@ -93,7 +93,10 @@ class CheckEnvironmentCommand:
 
         # PyMuPDF
         try:
-            import fitz
+            try:
+                import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
+            except ImportError:
+                import fitz  # Legacy fallback
             ver = getattr(fitz, "version", ("?", "?", "?"))
             ver_str = ".".join(str(v) for v in ver) if isinstance(ver, (tuple, list)) else str(ver)
             _msg(f"  PyMuPDF:  version={ver_str}  file={getattr(fitz, '__file__', '?')}")
@@ -283,7 +286,7 @@ class InstallPyMuPDFCommand:
         try:
             subprocess.check_call(
                 [py, "-m", "pip", "install", "--upgrade",
-                 "--only-binary", ":all:", "--target", target, "PyMuPDF"],
+                 "--only-binary", ":all:", "--target", target, "PyMuPDF>=1.24,<2.0"],
                 timeout=300, **_kw)
             _msg("PyMuPDF installed successfully.  Please restart FreeCAD.")
             if QtWidgets:
@@ -296,9 +299,9 @@ class InstallPyMuPDFCommand:
             if QtWidgets:
                 QtWidgets.QMessageBox.critical(
                     None, "Install Failed",
-                    f"pip install PyMuPDF failed:\n{e}\n\n"
+                    f"pip install PyMuPDF>=1.24,<2.0 failed:\n{e}\n\n"
                     "Try running manually in a terminal:\n"
-                    f'  "{py}" -m pip install --target "{target}" PyMuPDF')
+                    f'  "{py}" -m pip install --target "{target}" "PyMuPDF>=1.24,<2.0"')
         except (subprocess.SubprocessError, OSError, RuntimeError, ValueError) as e:
             _err(f"Installer error: {e}\n{traceback.format_exc()}")
 
@@ -309,7 +312,10 @@ class InstallPyMuPDFCommand:
 def _parse_page_spec(spec: str, pdf_path: str) -> list:
     """Parse a page specification string into a list of 1-based page numbers."""
     try:
-        import fitz
+        try:
+            import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
+        except ImportError:
+            import fitz  # Legacy fallback
         pdoc = fitz.open(pdf_path)
         n = len(pdoc)
         pdoc.close()

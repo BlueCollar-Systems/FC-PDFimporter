@@ -71,7 +71,13 @@ module BCPDFQA
         result["finished_at"] = finish.utc.iso8601
         result["runtime_seconds"] = (finish - start_time).round(3)
         safe_result = utf8_safe(result)
-        File.open(result_path, "w") { |f| f.write(JSON.pretty_generate(safe_result)) }
+        json_str = nil
+        begin
+          json_str = JSON.pretty_generate(safe_result)
+        rescue StandardError
+          json_str = JSON.generate({"status" => "ERROR", "message" => "JSON encoding failed"})
+        end
+        File.open(result_path, "w") { |f| f.write(json_str) }
       end
     end
 
@@ -79,9 +85,14 @@ module BCPDFQA
       case obj
       when String
         begin
-          obj.encode("UTF-8", "binary", invalid: :replace, undef: :replace, replace: "?")
+          s = obj.dup
+          s.force_encoding("UTF-8")
+          unless s.valid_encoding?
+            s = obj.encode("UTF-8", "binary", invalid: :replace, undef: :replace, replace: "?")
+          end
+          s
         rescue StandardError
-          obj.to_s
+          obj.to_s.force_encoding("UTF-8")
         end
       when Array
         obj.map { |v| utf8_safe(v) }
@@ -125,14 +136,16 @@ module BCPDFQA
       end
 
       candidates.each do |path|
+        loaded = false
         begin
           require path
-          return path
+          loaded = true
         rescue LoadError
-          next
+          loaded = false
         rescue StandardError
-          next
+          loaded = false
         end
+        return path if loaded
       end
 
       if defined?(BlueCollarSystems::PDFVectorImporter) &&

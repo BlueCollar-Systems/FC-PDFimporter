@@ -76,7 +76,10 @@ def insert(filename, docname):
 def _check_fitz():
     """Verify PyMuPDF is available; show install prompt if not."""
     try:
-        import fitz  # noqa: F401
+        try:
+            import pymupdf as fitz  # noqa: F401  # PyMuPDF >= 1.24 preferred name
+        except ImportError:
+            import fitz  # noqa: F401  # Legacy fallback
         return True
     except ImportError:
         pass
@@ -125,7 +128,10 @@ def _import_with_dialog(filename):
 
     # Pre-populate page count
     try:
-        import fitz
+        try:
+            import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
+        except ImportError:
+            import fitz  # Legacy fallback
         with fitz.open(filename) as doc:
             page_count = doc.page_count
         dlg._page_count = page_count

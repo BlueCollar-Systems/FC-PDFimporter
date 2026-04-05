@@ -49,6 +49,7 @@ class Primitive:
     stroke_color: Optional[Tuple[float, float, float]] = None
     fill_color: Optional[Tuple[float, float, float]] = None
     dash_pattern: Optional[list] = None
+    dash_phase: float = 0.0
     line_width: Optional[float] = None
     layer_name: Optional[str] = None
     closed: bool = False

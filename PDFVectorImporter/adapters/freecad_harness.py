@@ -38,7 +38,10 @@ def parse_pages(spec: Optional[str], pdf_path: str):
 
     if s.lower() == "all":
         try:
-            import fitz  # type: ignore
+            try:
+                import pymupdf as fitz  # type: ignore  # PyMuPDF >= 1.24 preferred name
+            except ImportError:
+                import fitz  # type: ignore  # Legacy fallback
 
             doc = fitz.open(pdf_path)
             total = len(doc)
@@ -179,7 +182,10 @@ def _run_cmd(cmd: List[str], timeout_s: int = 300) -> dict:
 
 def ensure_pymupdf(mod_dir: Optional[str]) -> dict:
     try:
-        import fitz  # type: ignore  # noqa: F401
+        try:
+            import pymupdf as fitz  # type: ignore  # noqa: F401  # PyMuPDF >= 1.24 preferred name
+        except ImportError:
+            import fitz  # type: ignore  # noqa: F401  # Legacy fallback
         return {"status": "available", "installed_now": False}
     except ImportError as first_exc:
         if not mod_dir:
@@ -197,7 +203,10 @@ def ensure_pymupdf(mod_dir: Optional[str]) -> dict:
 
         # Try once more in case it already exists in bundled lib.
         try:
-            import fitz  # type: ignore  # noqa: F401
+            try:
+                import pymupdf as fitz  # type: ignore  # noqa: F401  # PyMuPDF >= 1.24 preferred name
+            except ImportError:
+                import fitz  # type: ignore  # noqa: F401  # Legacy fallback
             return {"status": "available_from_lib_dir", "installed_now": False, "lib_dir": str(lib_dir)}
         except ImportError:
             pass
@@ -240,7 +249,7 @@ def ensure_pymupdf(mod_dir: Optional[str]) -> dict:
                         "--disable-pip-version-check",
                         "--target",
                         str(lib_dir),
-                        "PyMuPDF",
+                        "PyMuPDF>=1.24,<2.0",
                     ],
                     timeout_s=600,
                 )
@@ -248,7 +257,7 @@ def ensure_pymupdf(mod_dir: Optional[str]) -> dict:
             except (subprocess.SubprocessError, OSError, ValueError, RuntimeError) as exc:
                 step_results.append(
                     {
-                        "cmd": [py, "-m", "pip", "install", "--target", str(lib_dir), "PyMuPDF"],
+                        "cmd": [py, "-m", "pip", "install", "--target", str(lib_dir), "PyMuPDF>=1.24,<2.0"],
                         "error": str(exc),
                     }
                 )
@@ -258,7 +267,10 @@ def ensure_pymupdf(mod_dir: Optional[str]) -> dict:
                 sys.path.insert(0, str(lib_dir))
 
             try:
-                import fitz  # type: ignore  # noqa: F401
+                try:
+                    import pymupdf as fitz  # type: ignore  # noqa: F401  # PyMuPDF >= 1.24 preferred name
+                except ImportError:
+                    import fitz  # type: ignore  # noqa: F401  # Legacy fallback
                 return {
                     "status": "installed_to_lib_dir",
                     "installed_now": True,

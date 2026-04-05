@@ -50,43 +50,58 @@ def _norm_color(col) -> Tuple[float, float, float]:
         return (0.0, 0.0, 0.0)
 
 
-def _parse_dashes(raw) -> list | None:
-    """Parse PyMuPDF dash patterns into a numeric list.
+def _parse_dashes(raw) -> Tuple[list | None, float]:
+    """Parse PyMuPDF dash patterns into a (dash_array, phase) tuple.
 
     PyMuPDF returns dashes as strings like ``'[ 6 6 ] 0'`` (array + phase)
-    or as actual lists/tuples.  Returns ``None`` for solid lines.
+    or as actual lists/tuples.  Returns ``(None, 0.0)`` for solid lines.
     """
     if raw is None:
-        return None
+        return None, 0.0
     if isinstance(raw, str):
         s = raw.strip()
         if not s or s.startswith("[]") or s == "() 0":
-            return None
+            return None, 0.0
         # Extract numbers between brackets: "[ 6 6 ] 0" -> [6.0, 6.0]
         bracket = s.find("[")
         bracket_end = s.find("]")
         if bracket >= 0 and bracket_end > bracket:
             inner = s[bracket + 1:bracket_end].strip()
             if not inner:
-                return None
+                return None, 0.0
             try:
                 nums = [float(x) for x in inner.split()]
-                return nums if nums else None
             except ValueError:
-                return None
-        return None
+                return None, 0.0
+            if not nums:
+                return None, 0.0
+            # Extract phase after closing bracket: "[ 6 6 ] 3" -> phase=3.0
+            phase = 0.0
+            after = s[bracket_end + 1:].strip()
+            if after:
+                try:
+                    phase = float(after)
+                except ValueError:
+                    pass
+            return nums, phase
+        return None, 0.0
     if isinstance(raw, (list, tuple)):
         if not raw:
-            return None
+            return None, 0.0
         # Could be ([6,6], 0) tuple or flat [6,6]
         if len(raw) == 2 and isinstance(raw[0], (list, tuple)):
-            return list(raw[0]) if raw[0] else None
+            phase = 0.0
+            try:
+                phase = float(raw[1])
+            except (TypeError, ValueError):
+                pass
+            return (list(raw[0]) if raw[0] else None), phase
         try:
             nums = [float(x) for x in raw]
-            return nums if nums else None
+            return (nums if nums else None), 0.0
         except (TypeError, ValueError):
-            return None
-    return None
+            return None, 0.0
+    return None, 0.0
 
 
 def extract_page(page, page_num: int, scale: float = 1.0,
@@ -107,7 +122,7 @@ def extract_page(page, page_num: int, scale: float = 1.0,
         stroke = _norm_color(path_group.get("color") or path_group.get("stroke"))
         fill = _norm_color(path_group.get("fill"))
         width = path_group.get("width")
-        dashes = _parse_dashes(path_group.get("dashes"))
+        dashes, dash_phase = _parse_dashes(path_group.get("dashes"))
         close_path = path_group.get("closePath", False)
         layer_name = path_group.get("oc") or path_group.get("layer")
 
@@ -214,7 +229,8 @@ def extract_page(page, page_num: int, scale: float = 1.0,
             primitives.append(Primitive(
                 id=next_id(), type=ptype, points=cleaned,
                 bbox=bbox, stroke_color=stroke, fill_color=fill,
-                dash_pattern=dashes, line_width=width,
+                dash_pattern=dashes, dash_phase=dash_phase,
+                line_width=width,
                 layer_name=layer_name, closed=is_closed,
                 area=area, page_number=page_num
             ))
