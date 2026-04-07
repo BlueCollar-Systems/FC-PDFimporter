@@ -1,7 +1,7 @@
 # PDF Vector Importer for FreeCAD
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Version: 4.0.2](https://img.shields.io/badge/Version-4.0.2-green.svg)
+![Version: 4.0.3](https://img.shields.io/badge/Version-4.0.3-green.svg)
 ![Platform: FreeCAD 0.21+](https://img.shields.io/badge/Platform-FreeCAD%200.21%2B-orange.svg)
 
 **Import vector geometry, text, and images from PDF files into FreeCAD as editable Part objects.**
@@ -41,7 +41,7 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
    | OS | Typical Path |
    |---|---|
    | **Windows** | `%APPDATA%\FreeCAD\Mod\` |
-   | **macOS** | `~/Library/Preferences/FreeCAD/Mod/` |
+   | **macOS** | `~/Library/Application Support/FreeCAD/Mod/` |
    | **Linux** | `~/.FreeCAD/Mod/` |
 
 2. Restart FreeCAD.

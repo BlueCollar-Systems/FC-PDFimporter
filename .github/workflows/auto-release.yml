@@ -63,20 +63,23 @@ jobs:
           )
           package_xml.write_text(package_text, encoding="utf-8")
 
-          readme_text = readme.read_text(encoding="utf-8")
-          readme_text = re.sub(
-              r"(!\[Version:\s*)(\d+\.\d+\.\d+)(\])",
-              rf"\g<1>{new_version}\3",
-              readme_text,
-              count=1,
-          )
-          readme_text = re.sub(
-              r"(Version-)(\d+\.\d+\.\d+)(-blue\.svg)",
-              rf"\g<1>{new_version}\3",
-              readme_text,
-              count=1,
-          )
-          readme.write_text(readme_text, encoding="utf-8")
+          for readme in [pathlib.Path("README.md"), pathlib.Path("PDFVectorImporter/README.md")]:
+              if not readme.exists():
+                  continue
+              readme_text = readme.read_text(encoding="utf-8")
+              readme_text = re.sub(
+                  r"(!\[Version:\s*)(\d+\.\d+\.\d+)(\])",
+                  rf"\g<1>{new_version}\3",
+                  readme_text,
+                  count=1,
+              )
+              readme_text = re.sub(
+                  r"(Version-)(\d+\.\d+\.\d+)(-(green|blue)\.svg)",
+                  rf"\g<1>{new_version}\3",
+                  readme_text,
+                  count=1,
+              )
+              readme.write_text(readme_text, encoding="utf-8")
 
           out = pathlib.Path(os.environ["GITHUB_OUTPUT"])
           out.write_text(f"version={new_version}\n", encoding="utf-8")
@@ -89,7 +92,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add PDFVectorImporter/package.xml README.md
+          git add PDFVectorImporter/package.xml README.md PDFVectorImporter/README.md
           git diff --cached --quiet && echo "No version changes to commit" && exit 0
           git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
           git push

@@ -39,3 +39,7 @@ tmp_*.py
 # Local build outputs
 dist/
 *.zip
+
+# Dev artifacts
+dev_logs/
+.pytest_cache/
