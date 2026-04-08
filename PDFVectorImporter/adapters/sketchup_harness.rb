@@ -22,8 +22,37 @@ module BCPDFQA
       payload = JSON.parse(File.read(payload_path))
       result_path = payload["result_json"].to_s
       raise "result_json missing in payload" if result_path.strip.empty?
+      progress_path = payload["progress_json"].to_s
 
       start_time = Time.now
+      progress_lock = Mutex.new
+      progress_state = {
+        "test_id" => payload["test_id"],
+        "platform" => "SU",
+        "status" => "RUNNING",
+        "current_stage" => "boot",
+        "started_at" => start_time.utc.iso8601,
+        "last_heartbeat_at" => start_time.utc.iso8601,
+        "heartbeat_count" => 0,
+        "stage_history" => [],
+        "ruby_pid" => Process.pid
+      }
+      progress_tick = lambda do |stage, details = nil|
+        now = Time.now.utc.iso8601
+        progress_lock.synchronize do
+          progress_state["current_stage"] = stage
+          progress_state["last_heartbeat_at"] = now
+          progress_state["heartbeat_count"] = progress_state["heartbeat_count"].to_i + 1
+          entry = {"at" => now, "stage" => stage}
+          entry["details"] = details if details
+          history = progress_state["stage_history"]
+          history << entry
+          history.shift while history.length > 80
+          write_progress_snapshot(progress_path, progress_state)
+        end
+      end
+
+      progress_tick.call("payload_loaded", {"payload_path" => payload_path})
       result = {
         "test_id" => payload["test_id"],
         "platform" => "SU",
@@ -31,23 +60,52 @@ module BCPDFQA
         "message" => "",
         "started_at" => start_time.utc.iso8601
       }
+      heartbeat_thread = nil
 
       begin
         loader = require_extension(payload)
+        progress_tick.call("extension_loaded", {"loader" => loader})
         importer = BlueCollarSystems::PDFVectorImporter
 
         model = Sketchup.active_model
         raise "No active SketchUp model" unless model
+        progress_tick.call("model_ready")
 
         before = model_entity_counts(model)
         before_layers = safe_layer_count(model)
+        progress_tick.call("model_counts_before_done", {
+          "entities" => before,
+          "layers_before" => before_layers
+        })
 
         opts = build_opts(payload, importer)
+        progress_tick.call("options_built")
+        progress_tick.call("pipeline_started", {
+          "input_pdf" => payload["input_pdf"],
+          "preset" => payload["preset"],
+          "page_range" => payload["page_range"]
+        })
+        heartbeat_thread = Thread.new do
+          loop do
+            sleep 2
+            progress_tick.call("pipeline_running")
+          end
+        end
         stats = importer.run_pipeline(model, payload["input_pdf"], opts)
+        if heartbeat_thread
+          heartbeat_thread.kill
+          heartbeat_thread.join(0.2) rescue nil
+          heartbeat_thread = nil
+        end
         raise "run_pipeline returned nil" if stats.nil?
+        progress_tick.call("pipeline_completed")
 
         after = model_entity_counts(model)
         after_layers = safe_layer_count(model)
+        progress_tick.call("model_counts_after_done", {
+          "entities" => after,
+          "layers_after" => after_layers
+        })
 
         result["status"] = "PASS"
         result["message"] = "Import completed."
@@ -62,14 +120,34 @@ module BCPDFQA
         result["layers_before"] = before_layers
         result["layers_after"] = after_layers
         result["layers_delta"] = after_layers - before_layers
+        progress_lock.synchronize { progress_state["status"] = "PASS" }
+        progress_tick.call("pipeline_succeeded")
       rescue => e
+        if heartbeat_thread
+          heartbeat_thread.kill
+          heartbeat_thread.join(0.2) rescue nil
+          heartbeat_thread = nil
+        end
         result["status"] = "FAIL"
         result["message"] = "#{e.class}: #{e.message}"
         result["backtrace"] = (e.backtrace || [])[0, 25]
+        progress_lock.synchronize { progress_state["status"] = "FAIL" }
+        progress_tick.call("pipeline_failed", {"error" => result["message"]})
       ensure
+        if heartbeat_thread
+          heartbeat_thread.kill
+          heartbeat_thread.join(0.2) rescue nil
+          heartbeat_thread = nil
+        end
         finish = Time.now
         result["finished_at"] = finish.utc.iso8601
         result["runtime_seconds"] = (finish - start_time).round(3)
+        progress_lock.synchronize do
+          progress_state["status"] = result["status"]
+          progress_state["finished_at"] = result["finished_at"]
+          progress_state["runtime_seconds"] = result["runtime_seconds"]
+        end
+        progress_tick.call("writing_result", {"result_status" => result["status"]})
         safe_result = utf8_safe(result)
         json_str = nil
         begin
@@ -78,6 +156,7 @@ module BCPDFQA
           json_str = JSON.generate({"status" => "ERROR", "message" => "JSON encoding failed"})
         end
         File.open(result_path, "w") { |f| f.write(json_str) }
+        progress_tick.call("result_written", {"result_path" => result_path})
       end
     end
 
@@ -103,6 +182,17 @@ module BCPDFQA
       else
         obj
       end
+    end
+
+    def write_progress_snapshot(progress_path, progress_state)
+      return if progress_path.nil?
+      path = progress_path.to_s
+      return if path.strip.empty?
+      safe_progress = utf8_safe(progress_state)
+      json_str = JSON.pretty_generate(safe_progress)
+      File.open(path, "w") { |f| f.write(json_str) }
+    rescue StandardError
+      nil
     end
 
     def build_opts(payload, importer)
