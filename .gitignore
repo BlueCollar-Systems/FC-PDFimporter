@@ -43,3 +43,7 @@ dist/
 # Dev artifacts
 dev_logs/
 .pytest_cache/
+
+# Local PDF QA/vendor artifacts (keep local, do not track)
+PDFVectorImporter/src/lib/
+test_all_pdfs.py
