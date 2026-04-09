@@ -175,7 +175,7 @@ class ImportConfig:
     def full(cls) -> "ImportConfig":
         """Full / Shop Drawing preset — balanced quality and performance."""
         return cls(
-            curve_step_mm=0.5,
+            curve_step_mm=0.3,
             join_tol=0.1,
             detect_arcs=True,
             map_dashes=True,
@@ -187,6 +187,7 @@ class ImportConfig:
             import_mode="auto",
             cleanup_level="balanced",
             arc_mode="auto",
+            arc_fit_tol_mm=0.05,
             lineweight_mode="preserve",
             grouping_mode="per_page",
         )

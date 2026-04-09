@@ -68,6 +68,7 @@ class NormalizedText:
     font_size: float = 3.0 # mm
     rotation: float = 0.0  # degrees
     font_name: str = ""
+    color: Optional[Tuple[float, float, float]] = None  # RGB 0-1
     page_number: int = 0
     generic_tags: List[str] = field(default_factory=list)
     domain_tags: List[dict] = field(default_factory=list)

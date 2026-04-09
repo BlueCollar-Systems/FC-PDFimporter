@@ -521,7 +521,7 @@ def _arc_from_cubic(p0, p1, p2, p3, opts: ImportOptions):
 
     # Guard against fits that only look good on average.
     max_err = max(abs(_len2d(p, center) - r) for p in pts)
-    if max_err > max(opts.arc_fit_tol_mm * 2.5, r * 0.01):
+    if max_err > max(opts.arc_fit_tol_mm * 1.8, r * 0.008):
         return None
 
     v0 = p0 - center
@@ -546,7 +546,7 @@ def _arc_from_cubic(p0, p1, p2, p3, opts: ImportOptions):
     am = math.atan2(vm.y, vm.x)
     expected_mid = _normalize_angle(a0 + (d * 0.5))
     mid_diff = abs(_normalize_angle(am - expected_mid))
-    if mid_diff > (math.pi / 3.0):
+    if mid_diff > (math.pi / 4.0):
         return None
 
     # Tangents at cubic endpoints should be close to perpendicular to the
@@ -1701,9 +1701,22 @@ def import_pdf_page(pdf_path: str, page_num: int = 1,
 
     pdf_doc = fitz.open(pdf_path)
     try:
-        return _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc)
+        result = _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc)
     finally:
         pdf_doc.close()
+
+    # Autofit viewport after single-page import
+    try:
+        import FreeCADGui
+        view = FreeCADGui.ActiveDocument.ActiveView
+        if view:
+            view.setCameraType("Orthographic")
+            view.viewTop()
+            view.fitAll()
+    except (ImportError, AttributeError, RuntimeError):
+        pass
+
+    return result
 
 
 def _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc):
@@ -2125,7 +2138,7 @@ def _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc):
         fill = path_group.get("fill")
         close_path = path_group.get("closePath", False)
         width = _as_float(path_group.get("width") or path_group.get("lineWidth"))
-        dashes, _dash_phase = _parse_dashes(path_group.get("dashes"))
+        dashes, dash_phase = _parse_dashes(path_group.get("dashes"))  # noqa: F841 — dash_phase stored for QA/adapter use; FC DrawStyle has no phase param
         layer_name = path_group.get("oc") or path_group.get("layer")
 
         # ── Skip invisible / clipping paths ──
@@ -2329,8 +2342,10 @@ def _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc):
         if opts.detect_arcs:
             processed = []
             for edges, is_closed in wires_edges:
-                if _is_heavy and len(edges) > 64:
-                    # Heavy-page guard: skip arc fitting on very long chains
+                if _is_heavy and len(edges) > 200:
+                    # Heavy-page guard: skip arc fitting on very long chains.
+                    # Raised from 64 to 200 to preserve arc accuracy on complex
+                    # shop drawings while still protecting against map contours.
                     processed.append((edges, is_closed))
                 else:
                     new_edges = _polyline_edges_to_arcs(edges, opts)
@@ -2905,11 +2920,12 @@ def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
     # Open PDF once to gather page count and heights (avoids triple-open + handle leaks)
     _unit_scale = (MM_PER_PT if opts.scale_to_mm else 1.0) * opts.user_scale
     page_height_scaled = 792 * _unit_scale  # default: US Letter height in points
-    pages = opts.pages or [1]
     page_heights_scaled: Dict[int, float] = {}
     try:
         with fitz.open(pdf_path) as pdoc:
             total_pages = len(pdoc)
+            # Default to all pages when no explicit page list is provided
+            pages = opts.pages or list(range(1, total_pages + 1))
             if total_pages > 0:
                 page_height_scaled = pdoc.load_page(0).rect.height * _unit_scale
             for p in pages:
@@ -2939,7 +2955,7 @@ def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
                 # FreeCAD may rename the group (e.g., PDF_Page_2 → PDF_Page_2001)
                 # so we search for the most recently created matching group.
                 if len(pages) > 1 and imported_count > 0:
-                    running_stack_offset += last_page_height * 1.3
+                    running_stack_offset += last_page_height * 1.2
                     y_shift = -running_stack_offset
                     grp = None
                     for obj in reversed(fc_doc.Objects):
