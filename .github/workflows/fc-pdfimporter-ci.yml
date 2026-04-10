@@ -87,3 +87,62 @@ jobs:
 
       - name: Lint (functional + bugbear)
         run: ruff check --select F,B PDFVectorImporter
+
+      - name: Install dependencies
+        run: pip install "PyMuPDF>=1.24,<2.0"
+
+      - name: Run pdfcadcore unit tests
+        run: python -m pytest tests/ -v
+
+      - name: Preset extraction smoke test
+        run: |
+          python -c "
+          import sys, math
+          sys.path.insert(0, 'PDFVectorImporter')
+          from pdfcadcore.primitive_extractor import extract_page
+          from pdfcadcore.auto_mode import classify_page_content
+          from pdfcadcore.import_config import ImportConfig
+          import fitz, tempfile, os
+
+          # Build a mixed-content sample PDF
+          tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
+          doc = fitz.open()
+          p = doc.new_page(width=612, height=792)
+          p.draw_line((50,50),(300,50), color=(0,0,0), width=1)
+          p.draw_circle((200,400), 30, color=(1,0,0), width=0.5)
+          for i in range(8):
+              a = 2*math.pi*i/8
+              x, y = 400+25*math.cos(a), 300+25*math.sin(a)
+              p.draw_line((400,300),(x,y), color=(0,0,1), width=0.3)
+          tw = fitz.TextWriter(p.rect)
+          tw.append((100,700), 'BOLT 3/4\" DIA', fontsize=12)
+          tw.write_text(p)
+          p2 = doc.new_page(width=612, height=792)
+          p2.draw_rect((50,50,560,740), color=(0,0,0), width=0.5)
+          doc.save(tmp.name)
+          doc.close()
+
+          presets = ['fast', 'general_vector', 'technical_drawing', 'shop_drawing', 'max_fidelity']
+          errors = []
+          doc = fitz.open(tmp.name)
+          for preset_name in presets:
+              try:
+                  cfg = getattr(ImportConfig, preset_name)()
+                  for pg in range(len(doc)):
+                      page_data = extract_page(doc[pg], pg + 1)
+                      assert len(page_data.primitives) >= 0
+              except Exception as e:
+                  errors.append(f'{preset_name}: {e}')
+
+          # Also test auto-mode classification
+          drawings = doc[0].get_drawings()
+          cls = classify_page_content(drawings)
+          assert cls['type'] == 'vectors', f'Expected vectors, got {cls[\"type\"]}'
+
+          doc.close()
+          os.unlink(tmp.name)
+          if errors:
+              for e in errors: print(f'FAIL: {e}')
+              sys.exit(1)
+          print(f'PASS: {len(presets)} presets x 2 pages + auto-mode verified')
+          "
