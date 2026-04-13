@@ -169,6 +169,28 @@ class ImportPDFDialog(QtWidgets.QDialog):
             "Nested Page>Layer = pages containing layer sub-groups\n"
             "Nested Page>Lineweight = pages containing lineweight sub-groups")
 
+        self.page_arrangement_combo = QtWidgets.QComboBox()
+        self.page_arrangement_combo.addItems([
+            "Spread (20% gap)",
+            "Compact gap",
+            "Touching pages",
+            "Overlay pages",
+        ])
+        self.page_arrangement_combo.setCurrentText("Spread (20% gap)")
+        self.page_arrangement_combo.setToolTip(
+            "How multi-page imports are laid out in model space.\n"
+            "Spread (20% gap) keeps pages readable by default."
+        )
+
+        self.page_gap_spin = QtWidgets.QDoubleSpinBox()
+        self.page_gap_spin.setDecimals(2)
+        self.page_gap_spin.setSingleStep(0.05)
+        self.page_gap_spin.setRange(0.0, 1.0)
+        self.page_gap_spin.setValue(0.20)
+        self.page_gap_spin.setToolTip(
+            "Gap ratio used for Compact gap mode (0.20 = 20% page break)."
+        )
+
         # Apply preset defaults (sets text combo to match preset)
         self._on_preset_changed("Shop Drawing")
 
@@ -196,16 +218,20 @@ class ImportPDFDialog(QtWidgets.QDialog):
         adv_form.addRow("Cleanup Level:", self.cleanup_combo)
         adv_form.addRow("Lineweight:", self.lineweight_combo)
         adv_form.addRow("Grouping:", self.grouping_combo)
+        adv_form.addRow("Page Layout:", self.page_arrangement_combo)
+        adv_form.addRow("Compact Gap Ratio:", self.page_gap_spin)
         adv_group.setLayout(adv_form)
 
         # Hide/show advanced widgets when group is toggled
         adv_group.toggled.connect(lambda on: [
             w.setVisible(on) for w in (
                 self.arc_mode_combo, self.cleanup_combo,
-                self.lineweight_combo, self.grouping_combo)])
+                self.lineweight_combo, self.grouping_combo,
+                self.page_arrangement_combo, self.page_gap_spin)])
         # Start collapsed — hide the inner widgets
         for w in (self.arc_mode_combo, self.cleanup_combo,
-                  self.lineweight_combo, self.grouping_combo):
+                  self.lineweight_combo, self.grouping_combo,
+                  self.page_arrangement_combo, self.page_gap_spin):
             w.setVisible(False)
 
         btns = QtWidgets.QDialogButtonBox(
@@ -289,6 +315,12 @@ class ImportPDFDialog(QtWidgets.QDialog):
             grouping = grp.GetString("LastGroupingMode", "")
             if grouping:
                 self.grouping_combo.setCurrentText(grouping)
+            page_arrangement = grp.GetString("LastPageArrangement", "")
+            if page_arrangement:
+                self.page_arrangement_combo.setCurrentText(page_arrangement)
+            page_gap = grp.GetFloat("LastPageGapRatio", -1.0)
+            if page_gap >= 0.0:
+                self.page_gap_spin.setValue(page_gap)
         except (AttributeError, RuntimeError, ValueError):
             pass  # First run or corrupted prefs — use defaults
 
@@ -308,6 +340,8 @@ class ImportPDFDialog(QtWidgets.QDialog):
             grp.SetString("LastCleanupLevel", self.cleanup_combo.currentText())
             grp.SetString("LastLineweightMode", self.lineweight_combo.currentText())
             grp.SetString("LastGroupingMode", self.grouping_combo.currentText())
+            grp.SetString("LastPageArrangement", self.page_arrangement_combo.currentText())
+            grp.SetFloat("LastPageGapRatio", self.page_gap_spin.value())
         except (AttributeError, RuntimeError, ValueError):
             pass
 
@@ -319,6 +353,12 @@ class ImportPDFDialog(QtWidgets.QDialog):
         "single": "Single", "per_page": "Per Page", "per_layer": "Per Layer",
         "per_color": "Per Color", "nested_page_layer": "Nested Page>Layer",
         "nested_page_lineweight": "Nested Page>Lineweight",
+    }
+    _PAGE_ARRANGEMENT_MAP = {
+        "spread": "Spread (20% gap)",
+        "compact": "Compact gap",
+        "touch": "Touching pages",
+        "overlay": "Overlay pages",
     }
 
     def _on_preset_changed(self, preset_name):
@@ -352,6 +392,14 @@ class ImportPDFDialog(QtWidgets.QDialog):
             if "grouping_mode" in preset:
                 self.grouping_combo.setCurrentText(
                     self._GROUPING_MAP.get(preset["grouping_mode"], "Per Page"))
+            if "page_arrangement" in preset:
+                self.page_arrangement_combo.setCurrentText(
+                    self._PAGE_ARRANGEMENT_MAP.get(preset["page_arrangement"], "Spread (20% gap)"))
+            if "page_gap_ratio" in preset:
+                try:
+                    self.page_gap_spin.setValue(float(preset["page_gap_ratio"]))
+                except (TypeError, ValueError):
+                    self.page_gap_spin.setValue(0.20)
 
     def _validate_and_accept(self):
         path = self.file_edit.text().strip()
@@ -458,6 +506,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
         _cleanup_rev = {v: k for k, v in self._CLEANUP_MAP.items()}
         _lw_rev = {v: k for k, v in self._LINEWEIGHT_MAP.items()}
         _grp_rev = {v: k for k, v in self._GROUPING_MAP.items()}
+        _arr_rev = {v: k for k, v in self._PAGE_ARRANGEMENT_MAP.items()}
 
         opts = core.ImportOptions(
             pages=self._parse_pages(),
@@ -481,6 +530,8 @@ class ImportPDFDialog(QtWidgets.QDialog):
             import_mode=import_mode,
             create_top_group=True,
             verbose=True,
+            page_arrangement=_arr_rev.get(self.page_arrangement_combo.currentText(), "spread"),
+            page_gap_ratio=float(self.page_gap_spin.value()),
         )
 
         # Phase-2 advanced options — attached to opts for downstream consumers.
