@@ -428,6 +428,13 @@ class ImportOptions:
     heavy_page_threshold: int = 3000        # above this: larger batches, throttled
     #   progress updates, deferred arc fitting on polyline runs
     #   0 = never auto-engage heavy mode
+    # Multi-page page placement:
+    #   spread  - 20% page gap (default)
+    #   compact - configurable smaller gap
+    #   touch   - edge-to-edge
+    #   overlay - same origin
+    page_arrangement: str = "spread"
+    page_gap_ratio: float = 0.20
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2901,6 +2908,32 @@ def _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc):
 # ──────────────────────────────────────────────────────────────────────
 # Multi-page entry point
 # ──────────────────────────────────────────────────────────────────────
+def _normalize_page_arrangement(raw: str | None) -> str:
+    key = (raw or "spread").strip().lower()
+    if key in {"overlay", "touch", "compact", "spread"}:
+        return key
+    return "spread"
+
+
+def _normalize_page_gap_ratio(raw: float | None) -> float:
+    try:
+        ratio = float(raw if raw is not None else 0.20)
+    except (TypeError, ValueError):
+        ratio = 0.20
+    return max(0.0, min(1.0, ratio))
+
+
+def _page_stack_step(page_height: float, arrangement: str, gap_ratio: float) -> float:
+    h = page_height if page_height > 0 else 1.0
+    if arrangement == "overlay":
+        return 0.0
+    if arrangement == "touch":
+        return h
+    if arrangement == "compact":
+        return h * (1.0 + gap_ratio)
+    return h * 1.2
+
+
 def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
     """Import one or more pages from a PDF file."""
     if opts is None:
@@ -2943,19 +2976,26 @@ def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
     try:
         imported_count = 0
         running_stack_offset = 0.0
-        last_page_height = page_height_scaled
+        page_arrangement = _normalize_page_arrangement(getattr(opts, "page_arrangement", "spread"))
+        page_gap_ratio = _normalize_page_gap_ratio(getattr(opts, "page_gap_ratio", 0.20))
+        first_page = True
         for p in pages:
             if p < 1 or p > total_pages:
                 _warn(f"Skipping out-of-range page {p} (PDF has {total_pages} pages)")
                 continue
             try:
+                _msg(f"Importing page {p}/{total_pages} ({imported_count+1} of {len(pages)})...")
                 import_pdf_page(pdf_path, page_num=p, opts=opts)
                 curr_page_height = page_heights_scaled.get(p, page_height_scaled)
                 # Offset each page group downward so they don't overlap.
                 # FreeCAD may rename the group (e.g., PDF_Page_2 → PDF_Page_2001)
                 # so we search for the most recently created matching group.
-                if len(pages) > 1 and imported_count > 0:
-                    running_stack_offset += last_page_height * 1.2
+                if len(pages) > 1 and not first_page:
+                    running_stack_offset += _page_stack_step(
+                        curr_page_height,
+                        page_arrangement,
+                        page_gap_ratio,
+                    )
                     y_shift = -running_stack_offset
                     grp = None
                     for obj in reversed(fc_doc.Objects):
@@ -2975,7 +3015,7 @@ def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
                                             sub.Placement.Base.y += y_shift
                             except (AttributeError, RuntimeError):
                                 pass
-                last_page_height = curr_page_height
+                first_page = False
                 imported_count += 1
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as e:
                 _err(f"Failed to import page {p}: {e}\n{traceback.format_exc()}")
