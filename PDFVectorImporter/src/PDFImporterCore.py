@@ -244,11 +244,17 @@ def _looks_like_fill_art_flood(n_drawings: int,
     total_items = stats.get("total_item_count", 0.0)
     max_rect_ratio = stats.get("max_rect_ratio", 0.0)
 
+    # Average items per drawing — glyph/fill-art floods have 1-3 items each,
+    # while real drawings (garden plans, floor plans) have many more.
+    avg_items = total_items / float(max(n_drawings, 1))
+
     # New fast path for coalesced pure-fill PDFs (common with newer PyMuPDF):
     # if the page is almost entirely fill-only and has virtually no stroke
     # signals, treat it as decorative/map art even at low drawing-group counts.
+    # Guard: only trigger when avg items per drawing is low (glyph-like).
     pure_fill = (fill_ratio >= AUTO_FILL_PURE_RATIO
-                 and stroke_ratio <= AUTO_FILL_PURE_STROKE_MAX)
+                 and stroke_ratio <= AUTO_FILL_PURE_STROKE_MAX
+                 and avg_items <= 5.0)
     if pure_fill and n_drawings >= AUTO_FILL_PURE_MIN_GROUPS:
         if total_items >= AUTO_FILL_PURE_MIN_ITEMS:
             return True
@@ -258,7 +264,9 @@ def _looks_like_fill_art_flood(n_drawings: int,
     # Legacy high-count fallback (kept for older parser behavior).
     if n_drawings < AUTO_FILL_DRAWING_THRESHOLD:
         return False
-    return fill_ratio >= AUTO_FILL_HEAVY_RATIO and stroke_ratio <= AUTO_FILL_STROKE_MAX
+    return (fill_ratio >= AUTO_FILL_HEAVY_RATIO
+            and stroke_ratio <= AUTO_FILL_STROKE_MAX
+            and avg_items <= 5.0)
 
 
 def _as_float(v) -> Optional[float]:
@@ -945,6 +953,64 @@ def _is_smaller_font(span: dict, ref_size: float) -> bool:
     return size > 0 and size < ref_size * 0.95
 
 
+def _repair_fraction_artifact_runs(text: str) -> str:
+    """Fix run-on mixed-fraction artifacts produced by fragmented OCR spans.
+
+    Example: "19/163 7/161 9/16" -> "1 9/16 3 7/16 1 9/16"
+    """
+    if not text:
+        return text
+
+    def _to_mixed(num_s: str, den_s: str, tail: str = "") -> str | None:
+        try:
+            num_v = int(num_s)
+            den_v = int(den_s)
+        except ValueError:
+            return None
+        if num_v < den_v:
+            return None
+        if len(num_s) < 2:
+            return None
+        whole_s = num_s[:-1]
+        frac_num_s = num_s[-1]
+        try:
+            whole_v = int(whole_s)
+            frac_num_v = int(frac_num_s)
+        except ValueError:
+            return None
+        if whole_v < 0 or frac_num_v <= 0 or frac_num_v >= den_v:
+            return None
+        return f"{whole_v} {frac_num_v}/{den_v}{tail}"
+
+    def _repl_with_tail(m: re.Match) -> str:
+        num_s = m.group(1)
+        den_s = m.group(2)
+        tail = m.group(3)
+        try:
+            num_v = int(num_s)
+            den_v = int(den_s)
+        except ValueError:
+            return m.group(0)
+        if 0 < num_v < den_v:
+            return f"{num_v}/{den_v} {tail}"
+        mixed = _to_mixed(num_s, den_s, f" {tail}")
+        return mixed if mixed else m.group(0)
+
+    def _repl_no_tail(m: re.Match) -> str:
+        mixed = _to_mixed(m.group(1), m.group(2))
+        return mixed if mixed else m.group(0)
+
+    # "19/163" -> "1 9/16 3"
+    out = re.sub(r"(?<!\d)(\d{1,3})/(16|32|64)(\d)(?!\d)", _repl_with_tail, text)
+    # "19/16" -> "1 9/16" (keep conservative: only denominators common to inch dims)
+    out = re.sub(
+        r"(?<!\d)(\d{2,3})/(16|32|64)(?!\d)",
+        _repl_no_tail,
+        out,
+    )
+    return out
+
+
 def _reconstruct_line_text(spans: list) -> str:
     """Reconstruct a line of text, converting stacked fractions back to inline.
 
@@ -967,8 +1033,8 @@ def _reconstruct_line_text(spans: list) -> str:
         if text.isdigit() and len(text) >= 3:
             frac = _try_split_fraction(text)
             if frac:
-                return frac[0] + "/" + frac[1]
-        return text
+                return _repair_fraction_artifact_runs(frac[0] + "/" + frac[1])
+        return _repair_fraction_artifact_runs(text)
 
     # Find the dominant non-slash font size in this line. In many CAD PDFs the
     # fraction slash is rendered slightly larger than nearby digits; using it as
@@ -1130,7 +1196,7 @@ def _reconstruct_line_text(spans: list) -> str:
         result.append(text)
         i += 1
 
-    return "".join(result)
+    return _repair_fraction_artifact_runs("".join(result))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2931,7 +2997,10 @@ def _page_stack_step(page_height: float, arrangement: str, gap_ratio: float) -> 
         return h
     if arrangement == "compact":
         return h * (1.0 + gap_ratio)
-    return h * 1.2
+    # "spread" — use gap_ratio (default 0.20 = 20% gap) + fixed minimum
+    # to prevent pages from overlapping on dense/large-format drawings.
+    min_gap_mm = 10.0  # minimum 10mm gap regardless of page size
+    return h + max(h * gap_ratio, min_gap_mm)
 
 
 def import_pdf(pdf_path: str, opts: Optional[ImportOptions] = None):
