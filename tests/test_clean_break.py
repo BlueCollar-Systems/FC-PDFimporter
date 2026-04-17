@@ -137,6 +137,22 @@ class TestDialogCleanBreak(unittest.TestCase):
         self.assertNotIn('"Vectors Only"', self.source,
                          "Dialog still has the legacy 'Vectors Only' label.")
 
+    # BCS-ARCH-001 Rule 5 sweep: every quality-tier dial must be gone.
+    REMOVED_WIDGETS = (
+        "arc_mode_combo",
+        "cleanup_combo",
+        "lineweight_combo",
+        "hatch_combo",
+        "dpi_combo",
+        "strict_text_chk",
+    )
+
+    def test_quality_tier_widgets_removed(self):
+        for w in self.REMOVED_WIDGETS:
+            self.assertNotIn(
+                w, self.source,
+                f"Dialog still defines quality-tier widget {w!r} (BCS-ARCH-001 Rule 5).")
+
 
 class TestBlenderAdapterCleanBreak(unittest.TestCase):
     """QA adapter for the BL CLI must pass --mode, not --preset."""

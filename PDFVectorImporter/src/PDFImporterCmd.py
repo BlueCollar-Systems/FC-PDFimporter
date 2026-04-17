@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 # PDFImporterCmd.py — GUI command to import PDF with options dialog
 # BlueCollar Systems — BUILT. NOT BOUGHT.
+#
+# BCS-ARCH-001 Rule 5 sweep: this dialog exposes only the user-facing
+# controls — Mode, Text rendering, Import text — plus legitimate workflow
+# controls (pages, scale, grouping, page arrangement). Every quality-tier
+# dial (arc_mode, cleanup_level, lineweight_mode, hatch_mode, raster_dpi,
+# bezier_segments, merge_tolerance, detect_arcs, make_faces, map_dashes,
+# strict_text_fidelity, force_raster, raster_fallback) is removed. Internal
+# defaults from ImportConfig apply universally.
 from __future__ import annotations
 
 import os
@@ -67,7 +75,6 @@ class ImportPDFDialog(QtWidgets.QDialog):
         self.mode_combo.setToolTip(
             "\n".join(f"{k} — {v['tooltip']}" for k, v in self.MODES.items())
         )
-        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
 
         # ── Pages ──
         self.page_edit = QtWidgets.QLineEdit("All")
@@ -102,65 +109,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
         # Enable/disable text mode based on the toggle.
         self.import_text_chk.toggled.connect(self.text_combo.setEnabled)
 
-        # ── Strict Text Fidelity ──
-        self.strict_text_chk = QtWidgets.QCheckBox("Strict glyph fidelity")
-        self.strict_text_chk.setChecked(True)
-        self.strict_text_chk.setToolTip(
-            "When enabled, text import avoids line reconstruction and uses only\n"
-            "glyph-accurate placement paths (best visual match to PDF).\n"
-            "May create more text objects.")
-
-        # ── Hatch Mode ──
-        self.hatch_combo = QtWidgets.QComboBox()
-        self.hatch_combo.addItems(["Import", "Group (hidden)", "Skip"])
-        self.hatch_combo.setCurrentText("Group (hidden)")
-        self.hatch_combo.setToolTip(
-            "Hatching lines (section cuts):\n"
-            "Import = bring in as normal geometry\n"
-            "Group = separate hidden group (recommended)\n"
-            "Skip = discard entirely")
-
-        # ── Raster DPI ──
-        self.dpi_combo = QtWidgets.QComboBox()
-        self.dpi_combo.addItems(["72", "150", "200", "300", "600"])
-        self.dpi_combo.setCurrentText("300")
-        self.dpi_combo.setToolTip(
-            "Resolution for raster rendering.\n"
-            "150 = quick preview\n"
-            "200 = good balance\n"
-            "300 = high quality (default)\n"
-            "600 = maximum detail (slow, very large)")
-
-        # ── Advanced options ──
-        self.arc_mode_combo = QtWidgets.QComboBox()
-        self.arc_mode_combo.addItems(["Auto", "Preserve", "Rebuild", "Polyline"])
-        self.arc_mode_combo.setCurrentText("Auto")
-        self.arc_mode_combo.setToolTip(
-            "How to handle arcs found in the PDF:\n"
-            "Auto = detect and reconstruct where beneficial\n"
-            "Preserve = keep original PDF arc commands\n"
-            "Rebuild = force arc fitting on polyline segments\n"
-            "Polyline = convert all arcs to polyline segments")
-
-        self.cleanup_combo = QtWidgets.QComboBox()
-        self.cleanup_combo.addItems(["Conservative", "Balanced", "Aggressive"])
-        self.cleanup_combo.setCurrentText("Balanced")
-        self.cleanup_combo.setToolTip(
-            "Geometry cleanup aggressiveness:\n"
-            "Conservative = minimal cleanup, preserve all detail\n"
-            "Balanced = merge near-coincident points, remove micro-segments\n"
-            "Aggressive = heavy simplification, tightest tolerances")
-
-        self.lineweight_combo = QtWidgets.QComboBox()
-        self.lineweight_combo.addItems(["Ignore", "Preserve", "Group", "Map to Layers"])
-        self.lineweight_combo.setCurrentText("Preserve")
-        self.lineweight_combo.setToolTip(
-            "How to handle line weights from the PDF:\n"
-            "Ignore = all lines get default weight\n"
-            "Preserve = apply original PDF line widths\n"
-            "Group = group objects by line weight\n"
-            "Map to Layers = create layers based on line weight")
-
+        # ── Grouping (workflow — kept) ──
         self.grouping_combo = QtWidgets.QComboBox()
         self.grouping_combo.addItems([
             "Single", "Per Page", "Per Layer", "Per Color",
@@ -175,6 +124,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
             "Nested Page>Layer = pages containing layer sub-groups\n"
             "Nested Page>Lineweight = pages containing lineweight sub-groups")
 
+        # ── Page arrangement (workflow — kept) ──
         self.page_arrangement_combo = QtWidgets.QComboBox()
         self.page_arrangement_combo.addItems([
             "Spread (20% gap)",
@@ -187,17 +137,6 @@ class ImportPDFDialog(QtWidgets.QDialog):
             "How multi-page imports are laid out in model space.\n"
             "Spread (20% gap) keeps pages readable by default.")
 
-        self.page_gap_spin = QtWidgets.QDoubleSpinBox()
-        self.page_gap_spin.setDecimals(2)
-        self.page_gap_spin.setSingleStep(0.05)
-        self.page_gap_spin.setRange(0.0, 1.0)
-        self.page_gap_spin.setValue(0.20)
-        self.page_gap_spin.setToolTip(
-            "Gap ratio used for Compact gap mode (0.20 = 20% page break).")
-
-        # Apply mode defaults (enables/disables DPI etc.)
-        self._on_mode_changed("Auto")
-
         # ── Restore last-used settings ──
         self._restore_settings()
 
@@ -207,36 +146,10 @@ class ImportPDFDialog(QtWidgets.QDialog):
         form.addRow("Mode:", self.mode_combo)
         form.addRow("Pages:", self.page_edit)
         form.addRow("Scale (mm/pt):", self.scale_spin)
-        form.addRow("Raster DPI:", self.dpi_combo)
         form.addRow("", self.import_text_chk)
         form.addRow("Text Mode:", self.text_combo)
-        form.addRow("Text Fidelity:", self.strict_text_chk)
-        form.addRow("Hatching:", self.hatch_combo)
-
-        # ── Collapsible Advanced section ──
-        adv_group = QtWidgets.QGroupBox("Advanced")
-        adv_group.setCheckable(True)
-        adv_group.setChecked(False)
-        adv_form = QtWidgets.QFormLayout()
-        adv_form.addRow("Arc Mode:", self.arc_mode_combo)
-        adv_form.addRow("Cleanup Level:", self.cleanup_combo)
-        adv_form.addRow("Lineweight:", self.lineweight_combo)
-        adv_form.addRow("Grouping:", self.grouping_combo)
-        adv_form.addRow("Page Layout:", self.page_arrangement_combo)
-        adv_form.addRow("Compact Gap Ratio:", self.page_gap_spin)
-        adv_group.setLayout(adv_form)
-
-        # Hide/show advanced widgets when group is toggled
-        adv_group.toggled.connect(lambda on: [
-            w.setVisible(on) for w in (
-                self.arc_mode_combo, self.cleanup_combo,
-                self.lineweight_combo, self.grouping_combo,
-                self.page_arrangement_combo, self.page_gap_spin)])
-        # Start collapsed — hide the inner widgets
-        for w in (self.arc_mode_combo, self.cleanup_combo,
-                  self.lineweight_combo, self.grouping_combo,
-                  self.page_arrangement_combo, self.page_gap_spin):
-            w.setVisible(False)
+        form.addRow("Grouping:", self.grouping_combo)
+        form.addRow("Page Layout:", self.page_arrangement_combo)
 
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -245,7 +158,6 @@ class ImportPDFDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(adv_group)
         layout.addWidget(btns)
 
     def _browse(self):
@@ -275,16 +187,6 @@ class ImportPDFDialog(QtWidgets.QDialog):
                 except (RuntimeError, OSError, ValueError):
                     pass
 
-    def _on_mode_changed(self, mode_text):
-        """React to BCS-ARCH-001 mode changes.
-
-        Enables/disables the raster DPI selector based on whether the
-        chosen mode actually renders pixels. Auto, Raster, and Hybrid
-        all may render; Vector never does.
-        """
-        needs_raster = mode_text in ("Auto", "Raster", "Hybrid")
-        self.dpi_combo.setEnabled(needs_raster)
-
     _PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/PDFVectorImporter"
 
     def _restore_settings(self):
@@ -301,36 +203,15 @@ class ImportPDFDialog(QtWidgets.QDialog):
             import_text = grp.GetBool("LastImportText", True)
             self.import_text_chk.setChecked(bool(import_text))
             self.text_combo.setEnabled(self.import_text_chk.isChecked())
-            hatch_mode = grp.GetString("LastHatchMode", "")
-            if hatch_mode:
-                self.hatch_combo.setCurrentText(hatch_mode)
-            dpi = grp.GetString("LastDpi", "")
-            if dpi:
-                self.dpi_combo.setCurrentText(dpi)
-            strict_text = grp.GetBool("LastStrictTextFidelity", self.strict_text_chk.isChecked())
-            self.strict_text_chk.setChecked(bool(strict_text))
             scale = grp.GetFloat("LastScale", 0.0)
             if scale > 0:
                 self.scale_spin.setValue(scale)
-            # Advanced options
-            arc_mode = grp.GetString("LastArcMode", "")
-            if arc_mode:
-                self.arc_mode_combo.setCurrentText(arc_mode)
-            cleanup = grp.GetString("LastCleanupLevel", "")
-            if cleanup:
-                self.cleanup_combo.setCurrentText(cleanup)
-            lw = grp.GetString("LastLineweightMode", "")
-            if lw:
-                self.lineweight_combo.setCurrentText(lw)
             grouping = grp.GetString("LastGroupingMode", "")
             if grouping:
                 self.grouping_combo.setCurrentText(grouping)
             page_arrangement = grp.GetString("LastPageArrangement", "")
             if page_arrangement:
                 self.page_arrangement_combo.setCurrentText(page_arrangement)
-            page_gap = grp.GetFloat("LastPageGapRatio", -1.0)
-            if page_gap >= 0.0:
-                self.page_gap_spin.setValue(page_gap)
         except (AttributeError, RuntimeError, ValueError):
             pass  # First run or corrupted prefs — use defaults
 
@@ -341,24 +222,13 @@ class ImportPDFDialog(QtWidgets.QDialog):
             grp.SetString("LastMode", self.mode_combo.currentText())
             grp.SetString("LastTextMode", self.text_combo.currentText())
             grp.SetBool("LastImportText", self.import_text_chk.isChecked())
-            grp.SetString("LastHatchMode", self.hatch_combo.currentText())
-            grp.SetString("LastDpi", self.dpi_combo.currentText())
-            grp.SetBool("LastStrictTextFidelity", self.strict_text_chk.isChecked())
             grp.SetFloat("LastScale", self.scale_spin.value())
-            # Advanced options
-            grp.SetString("LastArcMode", self.arc_mode_combo.currentText())
-            grp.SetString("LastCleanupLevel", self.cleanup_combo.currentText())
-            grp.SetString("LastLineweightMode", self.lineweight_combo.currentText())
             grp.SetString("LastGroupingMode", self.grouping_combo.currentText())
             grp.SetString("LastPageArrangement", self.page_arrangement_combo.currentText())
-            grp.SetFloat("LastPageGapRatio", self.page_gap_spin.value())
         except (AttributeError, RuntimeError, ValueError):
             pass
 
-    # Mapping tables for advanced dropdowns (internal value -> UI label)
-    _ARC_MODE_MAP = {"auto": "Auto", "preserve": "Preserve", "rebuild": "Rebuild", "polyline": "Polyline"}
-    _CLEANUP_MAP = {"conservative": "Conservative", "balanced": "Balanced", "aggressive": "Aggressive"}
-    _LINEWEIGHT_MAP = {"ignore": "Ignore", "preserve": "Preserve", "group": "Group", "map_to_layers": "Map to Layers"}
+    # Mapping tables for combo dropdowns (internal value -> UI label)
     _GROUPING_MAP = {
         "single": "Single", "per_page": "Per Page", "per_layer": "Per Layer",
         "per_color": "Per Color", "nested_page_layer": "Nested Page>Layer",
@@ -471,27 +341,16 @@ class ImportPDFDialog(QtWidgets.QDialog):
             # when text is off.
             text_mode = "none"
 
-        # Map UI hatch mode
-        hatch_ui = self.hatch_combo.currentText()
-        if "Skip" in hatch_ui:
-            hatch_mode = "skip"
-        elif "Group" in hatch_ui:
-            hatch_mode = "group"
-        else:
-            hatch_mode = "import"
-
-        raster_dpi = int(self.dpi_combo.currentText())
-
-        # Reverse-map UI labels to internal values for advanced options
-        _arc_rev = {v: k for k, v in self._ARC_MODE_MAP.items()}
-        _cleanup_rev = {v: k for k, v in self._CLEANUP_MAP.items()}
-        _lw_rev = {v: k for k, v in self._LINEWEIGHT_MAP.items()}
+        # Reverse-map UI labels to internal values for workflow controls
         _grp_rev = {v: k for k, v in self._GROUPING_MAP.items()}
         _arr_rev = {v: k for k, v in self._PAGE_ARRANGEMENT_MAP.items()}
 
         # Consolidated defaults per BCS-ARCH-001 parameter table.
-        # These were previously per-preset; now they are mode-invariant
-        # (quality is always "indistinguishable from source").
+        # Quality-tier dials are hardcoded — no UI exposure.
+        # Hatching is always "group" (least destructive).
+        # Raster DPI is always 300. Strict text fidelity is always True.
+        # Lineweight handling is always "preserve". Arc reconstruction
+        # is always enabled in non-raster modes via the Auto cleanup level.
         opts = core.ImportOptions(
             pages=self._parse_pages(),
             scale_to_mm=False,
@@ -502,28 +361,26 @@ class ImportPDFDialog(QtWidgets.QDialog):
             make_faces=(import_mode != "raster"),
             import_text=import_text,
             text_mode=text_mode,
-            strict_text_fidelity=self.strict_text_chk.isChecked(),
-            hatch_mode=hatch_mode,
+            strict_text_fidelity=True,
+            hatch_mode="group",
             group_by_color=True,
             assign_linewidth=True,
             map_dashes=(import_mode != "raster"),
             detect_arcs=(import_mode != "raster"),
             ignore_images=(import_mode == "raster"),
             raster_fallback=(import_mode in ("auto", "hybrid")),
-            raster_dpi=raster_dpi,
+            raster_dpi=300,
             import_mode=import_mode,
             create_top_group=True,
             verbose=True,
             page_arrangement=_arr_rev.get(self.page_arrangement_combo.currentText(), "spread"),
-            page_gap_ratio=float(self.page_gap_spin.value()),
+            page_gap_ratio=0.20,
         )
 
-        # Advanced options — attached to opts for downstream consumers.
-        # ImportOptions dataclass does not define these yet, so we set them
-        # as extra attributes.  Existing code ignores unknown attrs safely.
-        opts.arc_mode = _arc_rev.get(self.arc_mode_combo.currentText(), "auto")
-        opts.cleanup_level = _cleanup_rev.get(self.cleanup_combo.currentText(), "balanced")
-        opts.lineweight_mode = _lw_rev.get(self.lineweight_combo.currentText(), "preserve")
+        # Workflow / consolidated quality dials attached as extra attrs.
+        opts.arc_mode = "auto"
+        opts.cleanup_level = "balanced"
+        opts.lineweight_mode = "preserve"
         opts.grouping_mode = _grp_rev.get(self.grouping_combo.currentText(), "per_page")
 
         return opts

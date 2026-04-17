@@ -48,8 +48,10 @@ def run_blender_cli(
     timeout_seconds: int,
     no_text: bool = False,
     no_images: bool = False,
-    no_arcs: bool = False,
 ) -> subprocess.CompletedProcess:
+    """Invoke the BL CLI. BCS-ARCH-001 Rule 5: arc toggles and similar
+    quality-tier flags were removed from BL's CLI, so we no longer forward
+    them. The ``no_text`` arg maps to ``--no-import-text``."""
     cmd = [
         python_exe,
         "-m",
@@ -63,11 +65,9 @@ def run_blender_cli(
         summary_json,
     ]
     if no_text:
-        cmd.append("--no-text")
+        cmd.append("--no-import-text")
     if no_images:
         cmd.append("--no-images")
-    if no_arcs:
-        cmd.append("--no-arcs")
 
     return subprocess.run(
         cmd,
@@ -101,9 +101,9 @@ def main() -> int:
     parser.add_argument("--page-range", default="1")
     parser.add_argument("--min-primitives", type=int, default=1)
     parser.add_argument("--runtime-cap-seconds", type=int, default=0)
-    parser.add_argument("--no-text", action="store_true")
+    parser.add_argument("--no-text", action="store_true",
+                        help="Passed through to BL CLI as --no-import-text")
     parser.add_argument("--no-images", action="store_true")
-    parser.add_argument("--no-arcs", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -173,7 +173,6 @@ def main() -> int:
                 timeout_seconds=timeout_seconds,
                 no_text=args.no_text,
                 no_images=args.no_images,
-                no_arcs=args.no_arcs,
             )
         except subprocess.TimeoutExpired:
             print(
