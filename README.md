@@ -17,7 +17,8 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 | Category | Capability |
 |----------|-----------|
 | PDF Parsing | PyMuPDF-powered vector extraction with full path, text, and image support |
-| Import Presets | Fast Preview, General Vector, Technical Drawing, Shop Drawing, Max Fidelity |
+| Import Modes | Auto (default), Vector, Raster, Hybrid — every mode targets maximum fidelity (BCS-ARCH-001) |
+| Text Rendering | Labels, 3D Text, Glyphs, Geometry — orthogonal to mode |
 | Arc Reconstruction | Kasa algebraic circle fit converts polyline segments back to true arcs |
 | Layer Support | OCG layers (PDF Optional Content Groups) map to FreeCAD groups |
 | Color Grouping | Geometry automatically organized by stroke/fill color |
@@ -83,18 +84,33 @@ python build_release.py
 1. Open FreeCAD
 2. Go to **File** → **Import** or use the **PDF Vector Importer** workbench
 3. Select a PDF file
-4. Choose an import preset (or customize settings)
-5. Click **Import**
+4. Choose an import **mode** (Auto is the default and works for most files)
+5. Choose a **text rendering** option
+6. Click **Import**
 
-## Import Presets
+## Import Modes (BCS-ARCH-001)
 
-| Preset | Best For | Speed |
-|--------|----------|-------|
-| **Fast Preview** | Quick look at PDF contents | Fastest |
-| **General Vector** | Most PDF files | Fast |
-| **Technical Drawing** | Engineering drawings with dimensions | Medium |
-| **Shop Drawing** | Fabrication shop drawings with steel shapes | Medium |
-| **Max Fidelity** | Maximum accuracy, all features enabled | Slower |
+Every mode targets **indistinguishable-from-source** fidelity within FreeCAD's
+capabilities. Modes differ only in extraction *strategy* for different input
+types, not in quality tier.
+
+| Mode | When to Use |
+|------|-------------|
+| **Auto** *(default)* | Let the importer analyze the PDF and pick the right strategy per page. Reports what it chose. |
+| **Vector** | Clean vector PDFs (CAD exports, shop drawings, engineering drawings). |
+| **Raster** | Scanned or image-only PDFs. Places the page as a high-DPI image. |
+| **Hybrid** | Mixed content: vectors where clean, raster where vector extraction would be lossy. |
+
+## Text Rendering (orthogonal to mode)
+
+| Option | Result |
+|--------|--------|
+| **Labels** | FreeCAD-native text objects, editable as text |
+| **3D Text** | Extruded geometric text (Draft ShapeString) |
+| **Glyphs** | Per-character vector glyphs |
+| **Geometry** | Text converted to non-editable geometry |
+
+Plus a separate **Import text** toggle to skip text entirely.
 
 ## Compatibility
 

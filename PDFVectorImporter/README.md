@@ -17,7 +17,8 @@ Arc reconstruction, dash mapping, color grouping, OCG layer support, and referen
 | Category | Capability |
 |---|---|
 | **PDF Parsing** | PyMuPDF-powered vector extraction with full path, text, and image support |
-| **Import Presets** | Fast Preview, General Vector, Technical Drawing, Shop Drawing, Max Fidelity |
+| **Import Modes** | Auto (default), Vector, Raster, Hybrid — every mode targets maximum fidelity (BCS-ARCH-001) |
+| **Text Rendering** | Labels, 3D Text, Glyphs, Geometry — orthogonal to mode |
 | **Arc Reconstruction** | Kasa algebraic circle fit converts polyline segments back to true arcs |
 | **Layer Support** | OCG layers (PDF Optional Content Groups) map to FreeCAD groups |
 | **Color Grouping** | Geometry automatically organized by stroke/fill color |
@@ -142,7 +143,7 @@ python run_pdf_vector_importer_tests.py --init-workbook qa_workbook.xlsx
 
 1. Open FreeCAD and switch to the **PDF Vector Importer** workbench.
 2. Click **Import PDF** or drag a PDF file onto the 3D view.
-3. Select an import preset (or use General Vector for most files).
+3. Select an import mode (leave as **Auto** for most files — it picks the right strategy per page).
 4. Geometry appears as editable Part objects, grouped by color and layer.
 5. Use **Scale by Reference** to calibrate to real-world dimensions.
 
