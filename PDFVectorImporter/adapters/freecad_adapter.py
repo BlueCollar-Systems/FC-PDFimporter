@@ -9,7 +9,7 @@ Purpose:
   and writes a result JSON file.
 
 Typical use:
-python adapters/freecad_adapter.py --config qa_config.json --test-id FC-GEO-001 --input "C:/tests/1071 - Rev 0.pdf" --preset "Shop Drawing" --dry-run
+python adapters/freecad_adapter.py --config qa_config.json --test-id FC-GEO-001 --input "C:/tests/1071 - Rev 0.pdf" --mode vector --dry-run
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def build_payload(args: argparse.Namespace, cfg: dict, result_path: str, config_
         "test_id": args.test_id,
         "platform": "FC",
         "input_pdf": normalize_path(args.input, config_dir),
-        "preset": args.preset,
+        "mode": args.mode,
         "page_range": args.page_range,
         "output_dir": normalize_path(args.output_dir, config_dir) if args.output_dir else None,
         "result_json": result_path,
@@ -89,7 +89,9 @@ def main() -> int:
     parser.add_argument("--config", help="Path to qa_config.json", required=False)
     parser.add_argument("--test-id", required=True, help="Test ID, e.g. FC-GEO-001")
     parser.add_argument("--input", required=True, help="Input PDF path")
-    parser.add_argument("--preset", default="Shop Drawing", help="Import preset name")
+    parser.add_argument("--mode", default="auto",
+                        choices=["auto", "vector", "raster", "hybrid"],
+                        help="Import mode (auto|vector|raster|hybrid)")
     parser.add_argument("--page-range", default="1", help="Page range string")
     parser.add_argument("--output-dir", help="Optional output directory")
     parser.add_argument("--notes", help="Optional notes")

@@ -54,12 +54,14 @@ class ImportConfig:
     scale_to_mm: bool = True
     user_scale: float = 1.0
     flip_y: bool = True
-    join_tol: float = 0.1
+    # Consolidated per BCS-ARCH-001 parameter table — tightest correct values
+    # win because "indistinguishable from source" is the quality target.
+    join_tol: float = 0.05
     min_seg_len: float = 0.0
-    curve_step_mm: float = 0.5
+    curve_step_mm: float = 0.2
     make_faces: bool = True
     import_text: bool = True
-    text_mode: str = "labels"               # "labels" | "geometry" | "none"
+    text_mode: str = "labels"               # "labels" | "3d_text" | "glyphs" | "geometry" | "none"
     strict_text_fidelity: bool = True
     group_by_color: bool = True
     assign_linewidth: bool = True
@@ -67,16 +69,16 @@ class ImportConfig:
     verbose: bool = True
     create_top_group: bool = True
     hatch_to_faces: bool = True
-    hatch_mode: str = "import"              # "import" | "skip" | "group"
+    hatch_mode: str = "group"               # "import" | "skip" | "group"
     ignore_images: bool = False
     raster_fallback: bool = True
-    raster_dpi: int = 200
-    import_mode: str = "auto"               # "auto" | "vectors" | "raster" | "hybrid"
+    raster_dpi: int = 300
+    import_mode: str = "auto"               # "auto" | "vector" | "raster" | "hybrid"
     max_bezier_segments: int = 128
 
     # ── Arc reconstruction (Phase 1) ─────────────────────────────────
     detect_arcs: bool = True
-    arc_fit_tol_mm: float = 0.08
+    arc_fit_tol_mm: float = 0.05
     min_arc_angle_deg: float = 5.0
     arc_sampling_pts: int = 7
 
@@ -98,7 +100,7 @@ class ImportConfig:
     # "conservative" | "balanced" | "aggressive"
     # Maps to tolerance values via CLEANUP_PRESETS.
 
-    lineweight_mode: str = "ignore"
+    lineweight_mode: str = "preserve"
     # "ignore"          — all geometry same lineweight
     # "preserve"        — set ViewObject linewidth from PDF stroke width
     # "group"           — group objects by lineweight
@@ -149,65 +151,40 @@ class ImportConfig:
                                         CLEANUP_PRESETS["balanced"]))
 
     # ─────────────────────────────────────────────────────────────────
-    # Named constructors (presets)
+    # Mode constructors (BCS-ARCH-001)
+    # Four modes only: auto, vector, raster, hybrid.
+    # Old preset classmethods (fast, full, max_fidelity) have been removed
+    # per BCS-ARCH-001. Parameters come from the consolidated defaults
+    # above — modes differ only in strategy for different input types,
+    # not in quality tier.
     # ─────────────────────────────────────────────────────────────────
     @classmethod
-    def fast(cls) -> "ImportConfig":
-        """Fast Preview preset — speed over fidelity."""
+    def auto(cls) -> "ImportConfig":
+        """Auto mode (default). Strategy chosen per page at extract time."""
+        return cls(import_mode="auto")
+
+    @classmethod
+    def vector(cls) -> "ImportConfig":
+        """Vector mode. Extract all vector geometry faithfully."""
+        return cls(import_mode="vector", raster_fallback=False)
+
+    @classmethod
+    def raster(cls) -> "ImportConfig":
+        """Raster mode. Place page as high-DPI image."""
         return cls(
-            curve_step_mm=2.0,
-            join_tol=0.5,
-            detect_arcs=False,
-            map_dashes=False,
-            make_faces=False,
+            import_mode="raster",
             import_text=False,
-            text_mode="none",
-            strict_text_fidelity=False,
+            detect_arcs=False,
+            make_faces=False,
+            map_dashes=False,
             hatch_mode="skip",
-            import_mode="auto",
-            cleanup_level="conservative",
-            arc_mode="polyline",
-            lineweight_mode="ignore",
-            grouping_mode="single",
         )
 
     @classmethod
-    def full(cls) -> "ImportConfig":
-        """Full / Shop Drawing preset — balanced quality and performance."""
+    def hybrid(cls) -> "ImportConfig":
+        """Hybrid mode. Vectors where clean; raster where lossy."""
         return cls(
-            curve_step_mm=0.3,
-            join_tol=0.1,
-            detect_arcs=True,
-            map_dashes=True,
-            make_faces=True,
-            import_text=True,
-            text_mode="geometry",
-            strict_text_fidelity=True,
-            hatch_mode="group",
-            import_mode="auto",
-            cleanup_level="balanced",
-            arc_mode="auto",
-            arc_fit_tol_mm=0.05,
-            lineweight_mode="preserve",
-            grouping_mode="per_page",
-        )
-
-    @classmethod
-    def max_fidelity(cls) -> "ImportConfig":
-        """Max Fidelity preset — highest accuracy, slower."""
-        return cls(
-            curve_step_mm=0.2,
-            join_tol=0.05,
-            detect_arcs=True,
-            map_dashes=True,
-            make_faces=True,
-            import_text=True,
-            text_mode="geometry",
-            strict_text_fidelity=True,
-            hatch_mode="import",
-            import_mode="auto",
-            cleanup_level="aggressive",
-            arc_mode="rebuild",
-            lineweight_mode="preserve",
-            grouping_mode="nested_page_layer",
+            import_mode="hybrid",
+            ignore_images=False,
+            raster_fallback=True,
         )

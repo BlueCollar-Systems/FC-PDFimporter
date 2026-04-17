@@ -43,7 +43,7 @@ def run_librecad_cli(
     repo_dir: str,
     input_pdf: str,
     output_dxf: str,
-    preset: str,
+    mode: str,
     page_range: str,
     summary_json: str,
     timeout_seconds: int,
@@ -58,8 +58,8 @@ def run_librecad_cli(
         input_pdf,
         "--out",
         output_dxf,
-        "--preset",
-        preset,
+        "--mode",
+        mode,
         "--pages",
         page_range,
         "--json",
@@ -100,7 +100,8 @@ def main() -> int:
     parser.add_argument("--config", help="Path to qa_config.json", required=False)
     parser.add_argument("--test-id", required=True)
     parser.add_argument("--input", required=True, help="Input PDF path")
-    parser.add_argument("--preset", default="technical")
+    parser.add_argument("--mode", default="auto",
+                        choices=["auto", "vector", "raster", "hybrid"])
     parser.add_argument("--page-range", default="1")
     parser.add_argument("--min-entities", type=int, default=1)
     parser.add_argument("--runtime-cap-seconds", type=int, default=0)
@@ -173,7 +174,7 @@ def main() -> int:
                 repo_dir=repo_dir,
                 input_pdf=input_pdf,
                 output_dxf=output_dxf,
-                preset=args.preset,
+                mode=args.mode,
                 page_range=args.page_range,
                 summary_json=summary_path,
                 timeout_seconds=timeout_seconds,

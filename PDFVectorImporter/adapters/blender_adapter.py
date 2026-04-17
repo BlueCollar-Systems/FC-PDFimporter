@@ -42,7 +42,7 @@ def run_blender_cli(
     python_exe: str,
     repo_dir: str,
     input_pdf: str,
-    preset: str,
+    mode: str,
     page_range: str,
     summary_json: str,
     timeout_seconds: int,
@@ -55,8 +55,8 @@ def run_blender_cli(
         "-m",
         "blender_pdf_vector_importer.cli",
         input_pdf,
-        "--preset",
-        preset,
+        "--mode",
+        mode,
         "--pages",
         page_range,
         "--json",
@@ -96,7 +96,8 @@ def main() -> int:
     parser.add_argument("--config", help="Path to qa_config.json", required=False)
     parser.add_argument("--test-id", required=True)
     parser.add_argument("--input", required=True, help="Input PDF path")
-    parser.add_argument("--preset", default="technical")
+    parser.add_argument("--mode", default="auto",
+                        choices=["auto", "vector", "raster", "hybrid"])
     parser.add_argument("--page-range", default="1")
     parser.add_argument("--min-primitives", type=int, default=1)
     parser.add_argument("--runtime-cap-seconds", type=int, default=0)
@@ -166,7 +167,7 @@ def main() -> int:
                 python_exe=python_exe,
                 repo_dir=repo_dir,
                 input_pdf=input_pdf,
-                preset=args.preset,
+                mode=args.mode,
                 page_range=args.page_range,
                 summary_json=summary_path,
                 timeout_seconds=timeout_seconds,

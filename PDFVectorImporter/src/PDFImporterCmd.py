@@ -30,19 +30,17 @@ import FreeCAD
 # Options dialog
 # ──────────────────────────────────────────────────────────────────────
 class ImportPDFDialog(QtWidgets.QDialog):
-    """Preset-based options dialog for the PDF vector importer."""
+    """Mode-based options dialog for the PDF vector importer (BCS-ARCH-001)."""
 
-    # cleanup_level maps to PDFImportConfig.CLEANUP_PRESETS tolerance values.
-    # It must stay consistent with join_tol: fast/loose presets → conservative,
-    # standard presets → balanced, high-fidelity → aggressive.
-    PRESETS = {
-        "Fast Preview":     dict(curve_step=2.0, join_tol=0.5,  detect_arcs=False, map_dashes=False, make_faces=False, text="No text",  hatch_mode="skip",   import_mode="auto",   cleanup_level="conservative", strict_text_fidelity=False, arc_mode="polyline",  lineweight_mode="ignore",   grouping_mode="single"),
-        "General Vector":   dict(curve_step=1.0, join_tol=0.2,  detect_arcs=False, map_dashes=False, make_faces=True,  text="Geometry", hatch_mode="import", import_mode="auto",   cleanup_level="balanced",     strict_text_fidelity=True,  arc_mode="auto",     lineweight_mode="ignore",   grouping_mode="per_page"),
-        "Technical Drawing":dict(curve_step=0.5, join_tol=0.1,  detect_arcs=True,  map_dashes=True,  make_faces=True,  text="Geometry", hatch_mode="group",  import_mode="auto",   cleanup_level="balanced",     strict_text_fidelity=True,  arc_mode="auto",     lineweight_mode="preserve", grouping_mode="per_page"),
-        "Shop Drawing":     dict(curve_step=0.5, join_tol=0.1,  detect_arcs=True,  map_dashes=True,  make_faces=True,  text="Geometry", hatch_mode="group",  import_mode="auto",   cleanup_level="balanced",     strict_text_fidelity=True,  arc_mode="auto",     lineweight_mode="preserve", grouping_mode="per_page"),
-        "Raster + Vectors": dict(curve_step=0.5, join_tol=0.1,  detect_arcs=True,  map_dashes=True,  make_faces=True,  text="Geometry", hatch_mode="skip",   import_mode="hybrid", cleanup_level="balanced",     strict_text_fidelity=True,  arc_mode="auto",     lineweight_mode="ignore",   grouping_mode="per_page", raster_dpi=200),
-        "Raster Only":      dict(curve_step=1.0, join_tol=0.5,  detect_arcs=False, map_dashes=False, make_faces=False, text="No text",  hatch_mode="skip",   import_mode="raster", cleanup_level="conservative", strict_text_fidelity=False, arc_mode="polyline",  lineweight_mode="ignore",   grouping_mode="single",   raster_dpi=300),
-        "Max Fidelity":     dict(curve_step=0.2, join_tol=0.05, detect_arcs=True,  map_dashes=True,  make_faces=True,  text="Geometry", hatch_mode="import", import_mode="auto",   cleanup_level="aggressive",   strict_text_fidelity=True,  arc_mode="rebuild",  lineweight_mode="preserve", grouping_mode="nested_page_layer"),
+    # Four modes only per BCS-ARCH-001. No presets. Auto is default.
+    # Per-parameter tuning comes from ImportConfig classmethods, not
+    # dialog-level tuples. Every mode targets identical quality —
+    # modes differ by strategy for different input types, not quality tier.
+    MODES = {
+        "Auto":   {"label": "Auto",   "tooltip": "Analyze and pick Vector/Raster/Hybrid automatically"},
+        "Vector": {"label": "Vector", "tooltip": "Extract all vector geometry faithfully"},
+        "Raster": {"label": "Raster", "tooltip": "Place as high-DPI image (scanned PDFs)"},
+        "Hybrid": {"label": "Hybrid", "tooltip": "Vectors where clean, raster where lossy"},
     }
 
     def __init__(self, parent=None):
@@ -60,11 +58,16 @@ class ImportPDFDialog(QtWidgets.QDialog):
         file_row.addWidget(self.file_edit, 1)
         file_row.addWidget(browse_btn, 0)
 
-        # ── Preset ──
-        self.preset_combo = QtWidgets.QComboBox()
-        self.preset_combo.addItems(list(self.PRESETS.keys()))
-        self.preset_combo.setCurrentText("Shop Drawing")
-        self.preset_combo.currentTextChanged.connect(self._on_preset_changed)
+        # ── Mode (BCS-ARCH-001) ──
+        self.mode_combo = QtWidgets.QComboBox()
+        for key, meta in self.MODES.items():
+            self.mode_combo.addItem(meta["label"], userData=key)
+        self.mode_combo.setCurrentText("Auto")
+        # Concatenate each mode's tooltip for the dropdown itself.
+        self.mode_combo.setToolTip(
+            "\n".join(f"{k} — {v['tooltip']}" for k, v in self.MODES.items())
+        )
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
 
         # ── Pages ──
         self.page_edit = QtWidgets.QLineEdit("All")
@@ -77,10 +80,27 @@ class ImportPDFDialog(QtWidgets.QDialog):
         self.scale_spin.setValue(25.4 / 72.0)
         self.scale_spin.setToolTip("Default converts PDF points to mm (25.4/72)")
 
-        # ── Import Text ──
+        # ── Import Text toggle ──
+        self.import_text_chk = QtWidgets.QCheckBox("Import text")
+        self.import_text_chk.setChecked(True)
+        self.import_text_chk.setToolTip(
+            "When unchecked, text is not imported at all (equivalent to the\n"
+            "old 'No text' option). When checked, the text mode below\n"
+            "controls how text is rendered.")
+
+        # ── Text Mode (orthogonal selector — BCS-ARCH-001) ──
         self.text_combo = QtWidgets.QComboBox()
-        self.text_combo.addItems(["Labels", "Geometry", "No text"])
+        self.text_combo.addItems(["Labels", "3D Text", "Glyphs", "Geometry"])
         self.text_combo.setCurrentText("Labels")
+        self.text_combo.setToolTip(
+            "How text is rendered when Import text is enabled:\n"
+            "Labels — FreeCAD Draft Text labels (fast, editable)\n"
+            "3D Text — extruded 3D letterforms\n"
+            "Glyphs — exact glyph geometry from the PDF font\n"
+            "Geometry — fall back to reconstructed line geometry")
+
+        # Enable/disable text mode based on the toggle.
+        self.import_text_chk.toggled.connect(self.text_combo.setEnabled)
 
         # ── Strict Text Fidelity ──
         self.strict_text_chk = QtWidgets.QCheckBox("Strict glyph fidelity")
@@ -88,8 +108,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
         self.strict_text_chk.setToolTip(
             "When enabled, text import avoids line reconstruction and uses only\n"
             "glyph-accurate placement paths (best visual match to PDF).\n"
-            "May create more text objects."
-        )
+            "May create more text objects.")
 
         # ── Hatch Mode ──
         self.hatch_combo = QtWidgets.QComboBox()
@@ -101,31 +120,18 @@ class ImportPDFDialog(QtWidgets.QDialog):
             "Group = separate hidden group (recommended)\n"
             "Skip = discard entirely")
 
-        # ── Import Mode ──
-        self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(["Auto", "Vectors Only", "Raster + Vectors", "Raster Only"])
-        self.mode_combo.setCurrentText("Auto")
-        self.mode_combo.setToolTip(
-            "Auto = detect page content and choose best mode\n"
-            "Vectors Only = import vector geometry (CAD drawings)\n"
-            "Raster + Vectors = render page image + overlay vectors\n"
-            "  (best for maps, site plans, PDFs with photos)\n"
-            "Raster Only = render page as image, skip vectors")
-        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
-
         # ── Raster DPI ──
         self.dpi_combo = QtWidgets.QComboBox()
         self.dpi_combo.addItems(["72", "150", "200", "300", "600"])
-        self.dpi_combo.setCurrentText("200")
+        self.dpi_combo.setCurrentText("300")
         self.dpi_combo.setToolTip(
             "Resolution for raster rendering.\n"
-            "150 = fast preview\n"
-            "200 = good balance (default)\n"
-            "300 = high quality (larger files)\n"
+            "150 = quick preview\n"
+            "200 = good balance\n"
+            "300 = high quality (default)\n"
             "600 = maximum detail (slow, very large)")
-        self.dpi_combo.setEnabled(False)  # Enabled when raster mode selected
 
-        # ── Advanced options (Phase 2) ──
+        # ── Advanced options ──
         self.arc_mode_combo = QtWidgets.QComboBox()
         self.arc_mode_combo.addItems(["Auto", "Preserve", "Rebuild", "Polyline"])
         self.arc_mode_combo.setCurrentText("Auto")
@@ -147,7 +153,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
 
         self.lineweight_combo = QtWidgets.QComboBox()
         self.lineweight_combo.addItems(["Ignore", "Preserve", "Group", "Map to Layers"])
-        self.lineweight_combo.setCurrentText("Ignore")
+        self.lineweight_combo.setCurrentText("Preserve")
         self.lineweight_combo.setToolTip(
             "How to handle line weights from the PDF:\n"
             "Ignore = all lines get default weight\n"
@@ -179,8 +185,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
         self.page_arrangement_combo.setCurrentText("Spread (20% gap)")
         self.page_arrangement_combo.setToolTip(
             "How multi-page imports are laid out in model space.\n"
-            "Spread (20% gap) keeps pages readable by default."
-        )
+            "Spread (20% gap) keeps pages readable by default.")
 
         self.page_gap_spin = QtWidgets.QDoubleSpinBox()
         self.page_gap_spin.setDecimals(2)
@@ -188,11 +193,10 @@ class ImportPDFDialog(QtWidgets.QDialog):
         self.page_gap_spin.setRange(0.0, 1.0)
         self.page_gap_spin.setValue(0.20)
         self.page_gap_spin.setToolTip(
-            "Gap ratio used for Compact gap mode (0.20 = 20% page break)."
-        )
+            "Gap ratio used for Compact gap mode (0.20 = 20% page break).")
 
-        # Apply preset defaults (sets text combo to match preset)
-        self._on_preset_changed("Shop Drawing")
+        # Apply mode defaults (enables/disables DPI etc.)
+        self._on_mode_changed("Auto")
 
         # ── Restore last-used settings ──
         self._restore_settings()
@@ -200,12 +204,12 @@ class ImportPDFDialog(QtWidgets.QDialog):
         # ── Layout ──
         form = QtWidgets.QFormLayout()
         form.addRow("PDF file:", file_row)
-        form.addRow("Preset:", self.preset_combo)
+        form.addRow("Mode:", self.mode_combo)
         form.addRow("Pages:", self.page_edit)
         form.addRow("Scale (mm/pt):", self.scale_spin)
-        form.addRow("Import Mode:", self.mode_combo)
         form.addRow("Raster DPI:", self.dpi_combo)
-        form.addRow("Import Text:", self.text_combo)
+        form.addRow("", self.import_text_chk)
+        form.addRow("Text Mode:", self.text_combo)
         form.addRow("Text Fidelity:", self.strict_text_chk)
         form.addRow("Hatching:", self.hatch_combo)
 
@@ -272,8 +276,13 @@ class ImportPDFDialog(QtWidgets.QDialog):
                     pass
 
     def _on_mode_changed(self, mode_text):
-        """Enable/disable DPI selector based on import mode."""
-        needs_raster = mode_text in ("Raster + Vectors", "Raster Only", "Auto")
+        """React to BCS-ARCH-001 mode changes.
+
+        Enables/disables the raster DPI selector based on whether the
+        chosen mode actually renders pixels. Auto, Raster, and Hybrid
+        all may render; Vector never does.
+        """
+        needs_raster = mode_text in ("Auto", "Raster", "Hybrid")
         self.dpi_combo.setEnabled(needs_raster)
 
     _PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/PDFVectorImporter"
@@ -282,18 +291,19 @@ class ImportPDFDialog(QtWidgets.QDialog):
         """Load last-used dialog settings from FreeCAD preferences."""
         try:
             grp = FreeCAD.ParamGet(self._PARAM_PATH)
-            preset = grp.GetString("LastPreset", "")
-            if preset and preset in self.PRESETS:
-                self.preset_combo.setCurrentText(preset)
+            mode = grp.GetString("LastMode", "")
+            if mode and mode in self.MODES:
+                self.mode_combo.setCurrentText(mode)
             text_mode = grp.GetString("LastTextMode", "")
-            if text_mode:
+            if text_mode and text_mode in ("Labels", "3D Text", "Glyphs", "Geometry"):
                 self.text_combo.setCurrentText(text_mode)
+            # Import-text toggle is a separate pref (BCS-ARCH-001 orthogonal control).
+            import_text = grp.GetBool("LastImportText", True)
+            self.import_text_chk.setChecked(bool(import_text))
+            self.text_combo.setEnabled(self.import_text_chk.isChecked())
             hatch_mode = grp.GetString("LastHatchMode", "")
             if hatch_mode:
                 self.hatch_combo.setCurrentText(hatch_mode)
-            import_mode = grp.GetString("LastImportMode", "")
-            if import_mode:
-                self.mode_combo.setCurrentText(import_mode)
             dpi = grp.GetString("LastDpi", "")
             if dpi:
                 self.dpi_combo.setCurrentText(dpi)
@@ -302,7 +312,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
             scale = grp.GetFloat("LastScale", 0.0)
             if scale > 0:
                 self.scale_spin.setValue(scale)
-            # Phase-2 advanced options
+            # Advanced options
             arc_mode = grp.GetString("LastArcMode", "")
             if arc_mode:
                 self.arc_mode_combo.setCurrentText(arc_mode)
@@ -328,14 +338,14 @@ class ImportPDFDialog(QtWidgets.QDialog):
         """Persist current dialog settings to FreeCAD preferences."""
         try:
             grp = FreeCAD.ParamGet(self._PARAM_PATH)
-            grp.SetString("LastPreset", self.preset_combo.currentText())
+            grp.SetString("LastMode", self.mode_combo.currentText())
             grp.SetString("LastTextMode", self.text_combo.currentText())
+            grp.SetBool("LastImportText", self.import_text_chk.isChecked())
             grp.SetString("LastHatchMode", self.hatch_combo.currentText())
-            grp.SetString("LastImportMode", self.mode_combo.currentText())
             grp.SetString("LastDpi", self.dpi_combo.currentText())
             grp.SetBool("LastStrictTextFidelity", self.strict_text_chk.isChecked())
             grp.SetFloat("LastScale", self.scale_spin.value())
-            # Phase-2 advanced options
+            # Advanced options
             grp.SetString("LastArcMode", self.arc_mode_combo.currentText())
             grp.SetString("LastCleanupLevel", self.cleanup_combo.currentText())
             grp.SetString("LastLineweightMode", self.lineweight_combo.currentText())
@@ -345,7 +355,7 @@ class ImportPDFDialog(QtWidgets.QDialog):
         except (AttributeError, RuntimeError, ValueError):
             pass
 
-    # Mapping tables for Phase-2 advanced dropdowns (internal value -> UI label)
+    # Mapping tables for advanced dropdowns (internal value -> UI label)
     _ARC_MODE_MAP = {"auto": "Auto", "preserve": "Preserve", "rebuild": "Rebuild", "polyline": "Polyline"}
     _CLEANUP_MAP = {"conservative": "Conservative", "balanced": "Balanced", "aggressive": "Aggressive"}
     _LINEWEIGHT_MAP = {"ignore": "Ignore", "preserve": "Preserve", "group": "Group", "map_to_layers": "Map to Layers"}
@@ -361,45 +371,13 @@ class ImportPDFDialog(QtWidgets.QDialog):
         "overlay": "Overlay pages",
     }
 
-    def _on_preset_changed(self, preset_name):
-        preset = self.PRESETS.get(preset_name)
-        if preset:
-            if "text" in preset:
-                self.text_combo.setCurrentText(preset["text"])
-            if "hatch_mode" in preset:
-                hatch_map = {"import": "Import", "group": "Group (hidden)", "skip": "Skip"}
-                self.hatch_combo.setCurrentText(
-                    hatch_map.get(preset["hatch_mode"], "Import"))
-            if "import_mode" in preset:
-                mode_map = {"auto": "Auto", "vectors": "Vectors Only",
-                            "hybrid": "Raster + Vectors", "raster": "Raster Only"}
-                self.mode_combo.setCurrentText(
-                    mode_map.get(preset["import_mode"], "Auto"))
-            if "raster_dpi" in preset:
-                self.dpi_combo.setCurrentText(str(preset["raster_dpi"]))
-            if "strict_text_fidelity" in preset:
-                self.strict_text_chk.setChecked(bool(preset["strict_text_fidelity"]))
-            # Phase-2 advanced options
-            if "arc_mode" in preset:
-                self.arc_mode_combo.setCurrentText(
-                    self._ARC_MODE_MAP.get(preset["arc_mode"], "Auto"))
-            if "cleanup_level" in preset:
-                self.cleanup_combo.setCurrentText(
-                    self._CLEANUP_MAP.get(preset["cleanup_level"], "Balanced"))
-            if "lineweight_mode" in preset:
-                self.lineweight_combo.setCurrentText(
-                    self._LINEWEIGHT_MAP.get(preset["lineweight_mode"], "Ignore"))
-            if "grouping_mode" in preset:
-                self.grouping_combo.setCurrentText(
-                    self._GROUPING_MAP.get(preset["grouping_mode"], "Per Page"))
-            if "page_arrangement" in preset:
-                self.page_arrangement_combo.setCurrentText(
-                    self._PAGE_ARRANGEMENT_MAP.get(preset["page_arrangement"], "Spread (20% gap)"))
-            if "page_gap_ratio" in preset:
-                try:
-                    self.page_gap_spin.setValue(float(preset["page_gap_ratio"]))
-                except (TypeError, ValueError):
-                    self.page_gap_spin.setValue(0.20)
+    # UI label -> canonical BCS-ARCH-001 mode value.
+    _MODE_VALUE_MAP = {
+        "Auto":   "auto",
+        "Vector": "vector",
+        "Raster": "raster",
+        "Hybrid": "hybrid",
+    }
 
     def _validate_and_accept(self):
         path = self.file_edit.text().strip()
@@ -472,17 +450,26 @@ class ImportPDFDialog(QtWidgets.QDialog):
     # ── Build ImportOptions from dialog state ──
     def build_options(self):
         import PDFVectorImporter.src.PDFImporterCore as core
-        preset_name = self.preset_combo.currentText()
-        preset = self.PRESETS.get(preset_name, self.PRESETS["Shop Drawing"])
-        text_ui = self.text_combo.currentText()
 
-        # Map UI text mode to ImportOptions fields
-        if text_ui == "Geometry":
-            import_text, text_mode = True, "geometry"
-        elif text_ui == "No text":
-            import_text, text_mode = False, "none"
-        else:
-            import_text, text_mode = True, "labels"
+        # BCS-ARCH-001 mode — single source of truth for strategy.
+        mode_label = self.mode_combo.currentText()
+        import_mode = self._MODE_VALUE_MAP.get(mode_label, "auto")
+
+        # Text controls (orthogonal per BCS-ARCH-001).
+        import_text = self.import_text_chk.isChecked()
+        text_ui = self.text_combo.currentText()
+        # Map the 4-option text combo to ImportOptions.text_mode internal values.
+        text_mode_map = {
+            "Labels":   "labels",
+            "3D Text":  "3d_text",
+            "Glyphs":   "glyphs",
+            "Geometry": "geometry",
+        }
+        text_mode = text_mode_map.get(text_ui, "labels")
+        if not import_text:
+            # Orthogonal toggle takes precedence — text_mode is irrelevant
+            # when text is off.
+            text_mode = "none"
 
         # Map UI hatch mode
         hatch_ui = self.hatch_combo.currentText()
@@ -493,39 +480,36 @@ class ImportPDFDialog(QtWidgets.QDialog):
         else:
             hatch_mode = "import"
 
-        # Map UI import mode to option value
-        mode_ui = self.mode_combo.currentText()
-        mode_map = {"Auto": "auto", "Vectors Only": "vectors",
-                    "Raster + Vectors": "hybrid", "Raster Only": "raster"}
-        import_mode = mode_map.get(mode_ui, "auto")
-
         raster_dpi = int(self.dpi_combo.currentText())
 
-        # Reverse-map UI labels to internal values for Phase-2 options
+        # Reverse-map UI labels to internal values for advanced options
         _arc_rev = {v: k for k, v in self._ARC_MODE_MAP.items()}
         _cleanup_rev = {v: k for k, v in self._CLEANUP_MAP.items()}
         _lw_rev = {v: k for k, v in self._LINEWEIGHT_MAP.items()}
         _grp_rev = {v: k for k, v in self._GROUPING_MAP.items()}
         _arr_rev = {v: k for k, v in self._PAGE_ARRANGEMENT_MAP.items()}
 
+        # Consolidated defaults per BCS-ARCH-001 parameter table.
+        # These were previously per-preset; now they are mode-invariant
+        # (quality is always "indistinguishable from source").
         opts = core.ImportOptions(
             pages=self._parse_pages(),
             scale_to_mm=False,
             user_scale=float(self.scale_spin.value()),
             flip_y=True,
-            join_tol=preset["join_tol"],
-            curve_step_mm=preset["curve_step"],
-            make_faces=preset["make_faces"],
+            join_tol=0.05,
+            curve_step_mm=0.2,
+            make_faces=(import_mode != "raster"),
             import_text=import_text,
             text_mode=text_mode,
             strict_text_fidelity=self.strict_text_chk.isChecked(),
             hatch_mode=hatch_mode,
             group_by_color=True,
             assign_linewidth=True,
-            map_dashes=preset["map_dashes"],
-            detect_arcs=preset["detect_arcs"],
+            map_dashes=(import_mode != "raster"),
+            detect_arcs=(import_mode != "raster"),
             ignore_images=(import_mode == "raster"),
-            raster_fallback=True,
+            raster_fallback=(import_mode in ("auto", "hybrid")),
             raster_dpi=raster_dpi,
             import_mode=import_mode,
             create_top_group=True,
@@ -534,12 +518,12 @@ class ImportPDFDialog(QtWidgets.QDialog):
             page_gap_ratio=float(self.page_gap_spin.value()),
         )
 
-        # Phase-2 advanced options — attached to opts for downstream consumers.
+        # Advanced options — attached to opts for downstream consumers.
         # ImportOptions dataclass does not define these yet, so we set them
         # as extra attributes.  Existing code ignores unknown attrs safely.
         opts.arc_mode = _arc_rev.get(self.arc_mode_combo.currentText(), "auto")
         opts.cleanup_level = _cleanup_rev.get(self.cleanup_combo.currentText(), "balanced")
-        opts.lineweight_mode = _lw_rev.get(self.lineweight_combo.currentText(), "ignore")
+        opts.lineweight_mode = _lw_rev.get(self.lineweight_combo.currentText(), "preserve")
         opts.grouping_mode = _grp_rev.get(self.grouping_combo.currentText(), "per_page")
 
         return opts
@@ -608,6 +592,3 @@ class ImportPDFVectorCommand:
             FreeCAD.Console.PrintError(f"Import failed: {e}\n{traceback.format_exc()}")
             QtWidgets.QMessageBox.critical(
                 None, "Import Failed", str(e))
-
-
-

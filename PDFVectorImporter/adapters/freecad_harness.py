@@ -66,20 +66,6 @@ def parse_pages(spec: Optional[str], pdf_path: str):
     return sorted(pages) if pages else [1]
 
 
-def preset_to_opts(preset_name: str):
-    # Mirrors defaults used by the FreeCAD UI command.
-    presets = {
-        "Fast Preview": dict(curve_step=2.0, join_tol=0.5, detect_arcs=False, map_dashes=False, make_faces=False, text="No text", hatch_mode="skip", strict_text_fidelity=False),
-        "General Vector": dict(curve_step=1.0, join_tol=0.2, detect_arcs=False, map_dashes=False, make_faces=True, text="Geometry", hatch_mode="import", strict_text_fidelity=True),
-        "Technical Drawing": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group", strict_text_fidelity=True),
-        "Shop Drawing": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group", strict_text_fidelity=True),
-        "Max Fidelity": dict(curve_step=0.2, join_tol=0.05, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="import", strict_text_fidelity=True),
-        # Cross-host alias used by SketchUp side:
-        "Full": dict(curve_step=0.5, join_tol=0.1, detect_arcs=True, map_dashes=True, make_faces=True, text="Geometry", hatch_mode="group", strict_text_fidelity=True),
-    }
-    return presets.get(preset_name or "", presets["Shop Drawing"])
-
-
 def setup_import_paths(payload: dict, payload_dir: str) -> None:
     mod_dir = resolve_path(payload.get("mod_dir"), payload_dir)
     if mod_dir and os.path.isdir(mod_dir):
@@ -362,28 +348,53 @@ def main() -> int:
             raise FileNotFoundError(f"Input PDF not found: {input_pdf}")
 
         pages = parse_pages(payload.get("page_range"), input_pdf)
-        preset = preset_to_opts((payload.get("preset") or "").strip())
-        text_mode = "geometry" if preset["text"] == "Geometry" else ("none" if preset["text"] == "No text" else "labels")
-        import_text = text_mode != "none"
-
+        mode_name = (payload.get("mode") or "auto").strip().lower()
+        if mode_name not in ("auto", "vector", "raster", "hybrid"):
+            mode_name = "auto"
+        # ImportConfig classmethod gives the consolidated parameters per
+        # BCS-ARCH-001. Parameters come from the single source of truth
+        # instead of obsolete per-preset dicts. Import via the same
+        # multi-name strategy used for PDFImporterCore so the harness works
+        # regardless of how the mod_dir is laid out on disk.
+        cfg_errors = {}
+        ImportConfig = None
+        for _mod_name in (
+            "PDFVectorImporter.src.PDFImportConfig",
+            "src.PDFImportConfig",
+            "PDFImportConfig",
+        ):
+            try:
+                _cfg_mod = importlib.import_module(_mod_name)
+                ImportConfig = getattr(_cfg_mod, "ImportConfig")
+                break
+            except (ImportError, ModuleNotFoundError, AttributeError) as _exc:
+                cfg_errors[_mod_name] = f"{_exc.__class__.__name__}: {_exc}"
+                continue
+        if ImportConfig is None:
+            raise RuntimeError(
+                "Could not import ImportConfig from configured mod_dir. "
+                f"Attempts: {cfg_errors}"
+            )
+        cfg_obj = getattr(ImportConfig, mode_name)()
         opts = core.ImportOptions(
             pages=pages,
             scale_to_mm=True,
             user_scale=1.0,
             flip_y=True,
-            join_tol=float(preset["join_tol"]),
-            curve_step_mm=float(preset["curve_step"]),
-            make_faces=bool(preset["make_faces"]),
-            import_text=import_text,
-            text_mode=text_mode,
-            strict_text_fidelity=bool(preset.get("strict_text_fidelity", True)),
-            hatch_mode=str(preset["hatch_mode"]),
-            group_by_color=True,
-            assign_linewidth=True,
-            map_dashes=bool(preset["map_dashes"]),
-            detect_arcs=bool(preset["detect_arcs"]),
-            ignore_images=True,
-            raster_fallback=True,
+            join_tol=float(cfg_obj.join_tol),
+            curve_step_mm=float(cfg_obj.curve_step_mm),
+            make_faces=bool(cfg_obj.make_faces),
+            import_text=bool(cfg_obj.import_text),
+            text_mode=str(cfg_obj.text_mode),
+            strict_text_fidelity=bool(cfg_obj.strict_text_fidelity),
+            hatch_mode=str(cfg_obj.hatch_mode),
+            group_by_color=bool(cfg_obj.group_by_color),
+            assign_linewidth=bool(cfg_obj.assign_linewidth),
+            map_dashes=bool(cfg_obj.map_dashes),
+            detect_arcs=bool(cfg_obj.detect_arcs),
+            ignore_images=bool(cfg_obj.ignore_images),
+            raster_fallback=bool(cfg_obj.raster_fallback),
+            import_mode=str(cfg_obj.import_mode),
             create_top_group=True,
             verbose=False,
         )
@@ -400,7 +411,7 @@ def main() -> int:
         result["status"] = "PASS" if ok is not False else "FAIL"
         result["message"] = "Import completed." if ok is not False else "core.import_pdf returned False."
         result["input_pdf"] = input_pdf
-        result["preset"] = payload.get("preset")
+        result["mode"] = payload.get("mode")
         result["page_range"] = payload.get("page_range")
         result["pages"] = pages
         result["counts_before"] = before

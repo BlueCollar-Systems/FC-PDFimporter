@@ -415,7 +415,7 @@ class ImportOptions:
     raster_fallback: bool = True             # render page as image if no vectors
     raster_dpi: int = 200                    # DPI for raster fallback rendering
     raster_dpi_user_set: bool = False        # True when user explicitly chose the DPI
-    # Import mode: "auto" | "vectors" | "raster" | "hybrid"
+    # Import mode: "auto" | "vector" | "raster" | "hybrid"  (BCS-ARCH-001)
     #   auto    — detect scanned/image-heavy and vector-glyph-flood pages
     #   vectors — vector geometry only (original behavior)
     #   raster  — render full page as image, skip vectors
@@ -1995,7 +1995,7 @@ def _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc):
             effective_mode = "hybrid"
 
         else:
-            effective_mode = "vectors"
+            effective_mode = "vector"
 
         if opts.verbose:
             if _flood_reason:
@@ -2037,7 +2037,7 @@ def _import_pdf_page_inner(pdf_doc, pdf_path, page_num, opts, fc_doc):
         # Fall through to vector import below
 
     # ── Legacy raster fallback (vectors mode, backwards compat) ──
-    if effective_mode == "vectors" and opts.raster_fallback and n_drawings < 5:
+    if effective_mode == "vector" and opts.raster_fallback and n_drawings < 5:
         tdict = page.get_text("dict")
         n_text = sum(1 for b in tdict.get("blocks", []) if b.get("type") == 0)
         if n_text < 3:
