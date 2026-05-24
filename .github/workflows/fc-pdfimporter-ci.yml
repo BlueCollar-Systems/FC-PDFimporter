@@ -94,7 +94,7 @@ jobs:
       - name: Run pdfcadcore unit tests
         run: python -m pytest tests/ -v
 
-      - name: Preset extraction smoke test
+      - name: BCS-ARCH-001 mode smoke test
         run: |
           python -c "
           import sys, math
@@ -104,7 +104,7 @@ jobs:
           from pdfcadcore.import_config import ImportConfig
           import fitz, tempfile, os
 
-          # Build a mixed-content sample PDF
+          # Build a mixed-content sample PDF (geometry + text + arcs)
           tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
           doc = fitz.open()
           p = doc.new_page(width=612, height=792)
@@ -122,19 +122,24 @@ jobs:
           doc.save(tmp.name)
           doc.close()
 
-          presets = ['fast', 'general_vector', 'technical_drawing', 'shop_drawing', 'max_fidelity']
+          mode_builders = [
+              ('auto', ImportConfig.auto),
+              ('vector', ImportConfig.vector),
+              ('raster', ImportConfig.raster),
+              ('hybrid', ImportConfig.hybrid),
+          ]
           errors = []
           doc = fitz.open(tmp.name)
-          for preset_name in presets:
+          for mode_name, builder in mode_builders:
               try:
-                  cfg = getattr(ImportConfig, preset_name)()
+                  cfg = builder()
+                  assert cfg.import_mode in ('auto', 'vector', 'raster', 'hybrid')
                   for pg in range(len(doc)):
                       page_data = extract_page(doc[pg], pg + 1)
                       assert len(page_data.primitives) >= 0
               except Exception as e:
-                  errors.append(f'{preset_name}: {e}')
+                  errors.append(f'{mode_name}: {e}')
 
-          # Also test auto-mode classification
           drawings = doc[0].get_drawings()
           cls = classify_page_content(drawings)
           assert cls['type'] == 'vectors', f'Expected vectors, got {cls[\"type\"]}'
@@ -144,5 +149,5 @@ jobs:
           if errors:
               for e in errors: print(f'FAIL: {e}')
               sys.exit(1)
-          print(f'PASS: {len(presets)} presets x 2 pages + auto-mode verified')
+          print(f'PASS: {len(mode_builders)} BCS-ARCH-001 modes x 2 pages + auto-mode verified')
           "
