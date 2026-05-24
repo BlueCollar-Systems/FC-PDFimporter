@@ -73,7 +73,8 @@ class ImportPDFDialog(QtWidgets.QDialog):
         self.mode_combo.setCurrentText("Auto")
         # Concatenate each mode's tooltip for the dropdown itself.
         self.mode_combo.setToolTip(
-            "\n".join(f"{k} — {v['tooltip']}" for k, v in self.MODES.items())
+            "Every mode targets maximum fidelity (indistinguishable from the source).\n"
+            + "\n".join(f"{k} — {v['tooltip']}" for k, v in self.MODES.items())
         )
 
         # ── Pages ──
@@ -435,7 +436,15 @@ class ImportPDFVectorCommand:
         import PDFVectorImporter.src.PDFImporterCore as core
         try:
             core.import_pdf(pdf_path, opts)
-            FreeCAD.Console.PrintMessage("PDF import complete.\n")
+            if opts.import_mode == "auto" and getattr(opts, "auto_resolved_mode", None):
+                reason = getattr(opts, "auto_reason", "") or ""
+                detail = f" ({reason})" if reason else ""
+                FreeCAD.Console.PrintMessage(
+                    f"PDF import complete. Auto mode used "
+                    f"{opts.auto_resolved_mode} strategy{detail}.\n"
+                )
+            else:
+                FreeCAD.Console.PrintMessage("PDF import complete.\n")
 
             # Auto-switch to orthographic top view
             try:
