@@ -144,10 +144,12 @@ class TestDialogCleanBreak(unittest.TestCase):
         self.assertIn("import_text_chk", self.source,
                       "Dialog must have a separate import-text QCheckBox.")
 
-    def test_mode_combo_is_primary(self):
+    def test_mode_combo_in_advanced_only(self):
         self.assertIn("mode_combo", self.source)
+        self.assertIn("advanced_group", self.source)
+        self.assertNotIn('form.addRow("Mode:", self.mode_combo)', self.source)
+        self.assertIn("Professional import", self.source)
         # The old secondary Import Mode combo had a "Vectors Only" label.
-        # Its removal is part of consolidation.
         self.assertNotIn('"Vectors Only"', self.source,
                          "Dialog still has the legacy 'Vectors Only' label.")
 

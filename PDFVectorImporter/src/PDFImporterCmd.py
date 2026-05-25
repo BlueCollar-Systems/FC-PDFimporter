@@ -38,7 +38,11 @@ import FreeCAD
 # Options dialog
 # ──────────────────────────────────────────────────────────────────────
 class ImportPDFDialog(QtWidgets.QDialog):
-    """Mode-based options dialog for the PDF vector importer (BCS-ARCH-001)."""
+    """Professional single-flow import dialog (BCS-ARCH-001).
+
+    Default path always uses Auto internally. Vector/Raster/Hybrid appear
+    only when the user expands Advanced.
+    """
 
     # Four modes only per BCS-ARCH-001. No presets. Auto is default.
     # Per-parameter tuning comes from ImportConfig classmethods, not
@@ -66,16 +70,29 @@ class ImportPDFDialog(QtWidgets.QDialog):
         file_row.addWidget(self.file_edit, 1)
         file_row.addWidget(browse_btn, 0)
 
-        # ── Mode (BCS-ARCH-001) ──
+        self.tagline_label = QtWidgets.QLabel(
+            "Professional import — maximum fidelity; Auto picks vector, "
+            "raster, or hybrid per page."
+        )
+        self.tagline_label.setWordWrap(True)
+
+        # ── Mode (Advanced only — BCS-ARCH-001) ──
         self.mode_combo = QtWidgets.QComboBox()
         for key, meta in self.MODES.items():
             self.mode_combo.addItem(meta["label"], userData=key)
         self.mode_combo.setCurrentText("Auto")
-        # Concatenate each mode's tooltip for the dropdown itself.
         self.mode_combo.setToolTip(
-            "Every mode targets maximum fidelity (indistinguishable from the source).\n"
+            "Every strategy targets maximum fidelity (indistinguishable from the source).\n"
             + "\n".join(f"{k} — {v['tooltip']}" for k, v in self.MODES.items())
         )
+        self.advanced_group = QtWidgets.QGroupBox("Advanced")
+        self.advanced_group.setCheckable(True)
+        self.advanced_group.setChecked(False)
+        self.advanced_group.setToolTip(
+            "Optional: override Auto with Vector, Raster, or Hybrid for all pages."
+        )
+        advanced_form = QtWidgets.QFormLayout(self.advanced_group)
+        advanced_form.addRow("Import strategy:", self.mode_combo)
 
         # ── Pages ──
         self.page_edit = QtWidgets.QLineEdit("All")
@@ -144,13 +161,14 @@ class ImportPDFDialog(QtWidgets.QDialog):
         # ── Layout ──
         form = QtWidgets.QFormLayout()
         form.addRow("PDF file:", file_row)
-        form.addRow("Mode:", self.mode_combo)
+        form.addRow("", self.tagline_label)
         form.addRow("Pages:", self.page_edit)
         form.addRow("Scale (mm/pt):", self.scale_spin)
         form.addRow("", self.import_text_chk)
         form.addRow("Text Mode:", self.text_combo)
         form.addRow("Grouping:", self.grouping_combo)
         form.addRow("Page Layout:", self.page_arrangement_combo)
+        form.addRow(self.advanced_group)
 
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -326,9 +344,12 @@ class ImportPDFDialog(QtWidgets.QDialog):
     def build_options(self):
         import PDFVectorImporter.src.PDFImporterCore as core
 
-        # BCS-ARCH-001 mode — single source of truth for strategy.
-        mode_label = self.mode_combo.currentText()
-        import_mode = self._MODE_VALUE_MAP.get(mode_label, "auto")
+        # BCS-ARCH-001: default GUI path is Auto; Advanced exposes explicit strategy.
+        if self.advanced_group.isChecked():
+            mode_label = self.mode_combo.currentText()
+            import_mode = self._MODE_VALUE_MAP.get(mode_label, "auto")
+        else:
+            import_mode = "auto"
 
         # Text controls (orthogonal per BCS-ARCH-001).
         import_text = self.import_text_chk.isChecked()
