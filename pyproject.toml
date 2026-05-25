@@ -1,3 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-vector-importer-fc"
+version = "4.0.9"
+description = "PDF vector importer workbench for FreeCAD — BlueCollar Systems"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "BlueCollar Systems" }
+]
+dependencies = [
+  "PyMuPDF>=1.24,<2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["PDFVectorImporter*"]
+exclude = [
+  "dev_logs*",
+  "installer*",
+  "tests*",
+  "PDFVectorImporter.src.lib*",
+  "PDFVectorImporter.qa_runs*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+  "dev_logs",
+  "installer",
+  "PDFVectorImporter/src/lib",
+  "PDFVectorImporter/qa_runs",
+  ".git",
+  "dist",
+  "build",
+]
+cache_dir = ".pytest_cache"
+
 [tool.ruff]
 target-version = "py310"
 exclude = [
@@ -6,6 +48,10 @@ exclude = [
     ".ruff_cache",
     "build_release.py",
     "build_windows_installer.py",
+    "PDFVectorImporter/qa_runs",
+    "PDFVectorImporter/src/lib",
+    "dev_logs",
+    "installer",
 ]
 
 [tool.ruff.lint]

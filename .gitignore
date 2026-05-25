@@ -43,6 +43,7 @@ dist/
 # Dev artifacts
 dev_logs/
 .pytest_cache/
+*.egg-info/
 
 # Local PDF QA/vendor artifacts (keep local, do not track)
 PDFVectorImporter/src/lib/
