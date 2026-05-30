@@ -365,7 +365,7 @@ def main() -> int:
         ):
             try:
                 _cfg_mod = importlib.import_module(_mod_name)
-                ImportConfig = getattr(_cfg_mod, "ImportConfig")
+                ImportConfig = _cfg_mod.ImportConfig
                 break
             except (ImportError, ModuleNotFoundError, AttributeError) as _exc:
                 cfg_errors[_mod_name] = f"{_exc.__class__.__name__}: {_exc}"
