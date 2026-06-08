@@ -13,7 +13,7 @@ Modes are extraction **strategy** (Auto / Vector / Raster / Hybrid), not quality
 | 0.18 and earlier | | | ❌ Not supported |
 
 `package.xml` declares `<freecadmin>0.21</freecadmin>` — the maintained add-on baseline.
-Adapter code uses PEP 604 union syntax and targets **Python 3.10+** as bundled with FreeCAD 0.21+.
+Adapter code uses `from __future__ import annotations` and PEP 604 union syntax. **Maintained runtime floor: Python 3.10+** (FreeCAD 0.21+). CI also compiles on **3.8–3.9** to catch accidental syntax regressions for legacy FreeCAD 0.19–0.20 hosts that may run a newer standalone Python.
 
 ### Text rendering
 
@@ -26,4 +26,4 @@ Adapter code uses PEP 604 union syntax and targets **Python 3.10+** as bundled w
 
 ## CI coverage
 
-GitHub Actions: Python matrix + FreeCAD-oriented pytest where applicable.
+GitHub Actions: Python **3.8–3.12**, `pdfcadcore_sync_check.py`, pytest, BCS-ARCH mode smoke.
