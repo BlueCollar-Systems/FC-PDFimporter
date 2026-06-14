@@ -31,12 +31,12 @@
     "python_harness": "adapters/freecad_harness.py"
   },
   "blender": {
-    "repo_dir": "C:/1BL-PDFimporter",
+    "repo_dir": "C:/1PDF-Importer-Blender",
     "python_exe": "<PATH_TO_PYTHON_EXE_OPTIONAL>",
     "timeout_seconds": 1800
   },
   "librecad": {
-    "repo_dir": "C:/1LC-PDFimporter",
+    "repo_dir": "C:/1PDF-Importer-LibreCAD",
     "python_exe": "<PATH_TO_PYTHON_EXE_OPTIONAL>",
     "timeout_seconds": 1800
   }

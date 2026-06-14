@@ -11,13 +11,13 @@ AppId={{35D2F41F-0EA4-4C80-8480-7B6C2ADAC327}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher=BlueCollar Systems
-AppPublisherURL=https://github.com/BlueCollar-Systems/FC-PDFimporter
+AppPublisherURL=https://github.com/BlueCollar-Systems/PDF-Importer-FreeCAD
 ; FreeCAD 1.1+ uses a versioned profile (v1-1). Legacy 0.21 uses FreeCAD\Mod\.
 DefaultDirName={userappdata}\FreeCAD\v1-1\Mod\PDFVectorImporter
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=PDFVectorImporter_Setup_v{#MyAppVersion}
+OutputBaseFilename=FreeCAD-PDF-Importer-Setup_v{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern

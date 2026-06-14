@@ -10,7 +10,7 @@ Generated from `qa_results_auto_local_full_combined.json` + workbook `SketchUp T
 
 ## Blocked Tests
 - SU-T001 | P0 | Install | Fresh install via Extension Manager
-  Input: bc_pdf_vector_importer_v350.rbz
+  Input: SketchUp-PDF-Importer_v3.5.0.rbz
   Steps: Extensions > Extension Manager > Install > select .rbz
   Expected: No errors in Ruby Console. Menu appears under Plugins > PDF Vector Importer.
   Metrics: 

@@ -46,7 +46,7 @@ See **[INSTALL.md](INSTALL.md)** for Windows FreeCAD 1.1 paths, dev junction ins
 4. Restart FreeCAD
 
 ### Windows Setup.exe (Easy Manual Install)
-1. Download `PDFVectorImporter_Setup_vX.Y.Z.exe` from Releases.
+1. Download `FreeCAD-PDF-Importer-Setup_vX.Y.Z.exe` from Releases.
 2. Close FreeCAD.
 3. Run the installer (no admin rights required).
 4. Restart FreeCAD.
@@ -54,7 +54,7 @@ See **[INSTALL.md](INSTALL.md)** for Windows FreeCAD 1.1 paths, dev junction ins
 ### Manual Installation
 1. Clone this repository:
    ```bash
-   git clone https://github.com/BlueCollar-Systems/FC-PDFimporter.git
+   git clone https://github.com/BlueCollar-Systems/PDF-Importer-FreeCAD.git
    ```
 2. Copy the `PDFVectorImporter` folder into your FreeCAD Mod directory:
    - **Windows (FreeCAD 1.1):** `%APPDATA%\FreeCAD\v1-1\Mod\`
@@ -81,8 +81,8 @@ python build_release.py
    python build_windows_installer.py
    ```
 3. Output files are written to `dist/`:
-   - `PDFVectorImporter_vX.Y.Z.zip`
-   - `PDFVectorImporter_Setup_vX.Y.Z.exe`
+   - `FreeCAD-PDF-Importer_vX.Y.Z.zip`
+   - `FreeCAD-PDF-Importer-Setup_vX.Y.Z.exe`
 
 ### Auto-Build on GitHub Releases
 1. Push a tag in `vX.Y.Z` format (example: `v3.5.1`).

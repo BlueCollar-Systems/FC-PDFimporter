@@ -16,7 +16,7 @@ Usage:
   python build_release.py --out /path/to/output_dir
 
 Output:
-  PDFVectorImporter_v<VERSION>.zip  (next to this script, or --out dir)
+  FreeCAD-PDF-Importer_v<VERSION>.zip  (next to this script, or --out dir)
 """
 
 import argparse
@@ -87,7 +87,7 @@ def _read_version() -> str:
 
 def build(out_dir: Path) -> Path:
     version = _read_version()
-    zip_name = f"PDFVectorImporter_v{version}.zip"
+    zip_name = f"FreeCAD-PDF-Importer_v{version}.zip"
     zip_path = out_dir / zip_name
 
     out_dir.mkdir(parents=True, exist_ok=True)

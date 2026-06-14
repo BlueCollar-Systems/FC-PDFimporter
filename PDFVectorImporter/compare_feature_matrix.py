@@ -58,13 +58,13 @@ def iter_files(root: Path) -> Iterable[Path]:
     if not root.exists():
         return []
 
-    if root.name == "1SU-PDFimporter":
+    if root.name == "1PDF-Importer-SketchUp":
         globs = ["README.md", "test/*.rb", "extracted/sketchup_ext/**/*.rb"]
-    elif root.name == "1FC-PDFimporter":
+    elif root.name == "1PDF-Importer-FreeCAD":
         globs = ["README.md", "PDFVectorImporter/**/*.py", "PDFVectorImporter/**/*.json", "PDFVectorImporter/**/*.rb", "tests/**/*.py"]
-    elif root.name == "1BL-PDFimporter":
+    elif root.name == "1PDF-Importer-Blender":
         globs = ["README.md", "blender_pdf_vector_importer/**/*.py", "pdf_vector_importer/**/*.py", "tests/**/*.py"]
-    elif root.name == "1LC-PDFimporter":
+    elif root.name == "1PDF-Importer-LibreCAD":
         globs = ["README.md", "librecad_pdf_importer/**/*.py", "*.py", "tests/**/*.py"]
     else:
         globs = ["README.md", "lib/**/*.dart", "docs/**/*"]

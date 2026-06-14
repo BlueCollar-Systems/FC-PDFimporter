@@ -147,7 +147,7 @@ jobs:
         run: |
           set -e
           VERSION="v${{ steps.version.outputs.version }}"
-          ZIP="PDFVectorImporter_v${{ steps.version.outputs.version }}.zip"
+          ZIP="FreeCAD-PDF-Importer_v${{ steps.version.outputs.version }}.zip"
 
           git fetch --tags --force
           if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then

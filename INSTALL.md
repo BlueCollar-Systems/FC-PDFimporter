@@ -47,7 +47,7 @@ $env:FREECAD_CMD = "D:\FreeCAD 1.1\bin\FreeCADCmd.exe"
 
 ## Windows Setup.exe (release build)
 
-1. Download `PDFVectorImporter_Setup_vX.Y.Z.exe` from [Releases](https://github.com/BlueCollar-Systems/FC-PDFimporter/releases).
+1. Download `FreeCAD-PDF-Importer-Setup_vX.Y.Z.exe` from [Releases](https://github.com/BlueCollar-Systems/PDF-Importer-FreeCAD/releases).
 2. Close FreeCAD.
 3. Run the installer (no admin required).
 4. Restart FreeCAD.

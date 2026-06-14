@@ -94,7 +94,7 @@ def compile_installer(iscc: Path, version: str, source_dir: Path) -> Path:
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
 
-    installer_exe = DIST_DIR / f"PDFVectorImporter_Setup_v{version}.exe"
+    installer_exe = DIST_DIR / f"FreeCAD-PDF-Importer-Setup_v{version}.exe"
     if not installer_exe.exists():
         raise RuntimeError(
             "Inno Setup completed but installer was not found at "
